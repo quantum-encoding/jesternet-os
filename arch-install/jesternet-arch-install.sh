@@ -572,12 +572,26 @@ install_base_system() {
 
     # Update mirrorlist for faster downloads
     log_step "Optimizing mirror list..."
-    if command -v reflector &> /dev/null; then
-        # Use country-specific mirrors if MIRROR_COUNTRY is set, otherwise use worldwide
-        local mirror_country="${MIRROR_COUNTRY:-US}"
-        reflector --country "$mirror_country" --protocol https --latest 20 --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || {
-            log_warning "reflector failed, using default mirrors"
+
+    # Always prepend the official geo-load-balanced mirror (fastest, most reliable)
+    local geo_mirror="Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch"
+
+    if [ -n "$MIRROR_COUNTRY" ] && command -v reflector &> /dev/null; then
+        # Use reflector to find country-specific mirrors, but prepend geo mirror
+        reflector --country "$MIRROR_COUNTRY" --protocol https --latest 10 --sort rate --save /etc/pacman.d/mirrorlist 2>/dev/null || {
+            log_warning "reflector failed, using fallback mirrors"
         }
+        # Prepend geo mirror to the list
+        sed -i "1i $geo_mirror" /etc/pacman.d/mirrorlist
+    else
+        # Use reliable fallback mirrors (geo-balanced + major US mirrors)
+        cat > /etc/pacman.d/mirrorlist << 'MIRRORS'
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+Server = https://mirrors.rit.edu/archlinux/$repo/os/$arch
+Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+Server = https://mirror.lty.me/archlinux/$repo/os/$arch
+MIRRORS
     fi
     log_success "Mirror list optimized"
 
