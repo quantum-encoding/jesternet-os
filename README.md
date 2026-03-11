@@ -80,36 +80,64 @@ The installer will guide you, but you'll need:
 
 ## Quick Start
 
-### 1. Clone or Download
+Boot from the Arch Linux ISO (via Ventoy USB or direct), then:
+
+### 1. Connect to WiFi
 
 ```bash
+iwctl
+station wlan0 connect "Your-SSID"
+# enter password when prompted
+exit
+```
+
+### 2. Verify internet
+
+```bash
+ping -c 3 8.8.8.8
+```
+
+### 3. Install git and clone
+
+```bash
+pacman -Sy git
 git clone https://github.com/quantum-encoding/jesternet-os.git
 cd jesternet-os
+bash install.sh
 ```
 
-Or download and extract the ZIP.
+### 4. Follow the prompts
 
-### 2. Run the Installer
+The installer will ask you to:
+- Select your target disk (supports NVMe, SATA, eMMC, and all disk types)
+- Set hostname, username, and password
+- Choose desktop style: **[D] Dock Bar** (macOS-style) or **[W] Windows Bar** (taskbar-style)
+- Optionally install development stacks
+
+### 5. Reboot
+
+Remove the USB and reboot. Log in and run:
 
 ```bash
-./install.sh
+./install-yay.sh
+./setup-theme.sh
 ```
 
-This opens an interactive menu where you can:
-- Install the DarkGlass theme
-- Choose your desktop style (Dock or Taskbar)
-- Install development environments
-- Install productivity software
+### Alternative: Install from Ventoy USB
 
-### 3. Choose Your Desktop Style
+If you have the repo files on your Ventoy drive:
 
-When prompted, select:
-- **[D] Dock Bar** - macOS-style bottom dock
-- **[W] Windows Bar** - Windows-style taskbar with start menu
+```bash
+iwctl
+station wlan0 connect "Your-SSID"
+exit
 
-### 4. Log Out and Back In
+mkdir -p /mnt/ventoy
+mount /dev/mapper/sdb1 /mnt/ventoy
+bash /mnt/ventoy/jesternet-os/install.sh
+```
 
-For all changes to take effect, log out of your session and log back in.
+> **Note:** If the Ventoy mount path differs, run `lsblk` to find the correct device.
 
 ---
 

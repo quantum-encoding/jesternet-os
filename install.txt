@@ -1,0 +1,33 @@
+JesterNet OS - Quick Install
+=============================
+
+Boot from Arch Linux ISO, then run:
+
+  iwctl
+  station wlan0 connect "Your-SSID"
+  exit
+
+  ping -c 3 8.8.8.8
+
+  pacman -Sy git
+  git clone https://github.com/quantum-encoding/jesternet-os.git
+  cd jesternet-os
+  bash install.sh
+
+Follow the prompts. When done, reboot.
+
+After first login run:
+
+  ./install-yay.sh
+  ./setup-theme.sh
+
+---
+Alternative: From Ventoy USB with files already on it:
+
+  iwctl
+  station wlan0 connect "Your-SSID"
+  exit
+
+  mkdir -p /mnt/ventoy
+  mount /dev/mapper/sdb1 /mnt/ventoy
+  bash /mnt/ventoy/jesternet-os/install.sh
