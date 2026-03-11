@@ -231,7 +231,7 @@ preflight_checks() {
     log_success "Internet connection active"
 
     # Ensure DNS is working (use Cloudflare as fallback)
-    if ! host archlinux.org &> /dev/null; then
+    if ! getent hosts archlinux.org &> /dev/null; then
         log_warning "DNS not configured, setting up fallback..."
         echo "nameserver 1.1.1.1" > /etc/resolv.conf
         echo "nameserver 8.8.8.8" >> /etc/resolv.conf
