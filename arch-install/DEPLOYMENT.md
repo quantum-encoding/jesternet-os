@@ -30,7 +30,7 @@ Deploy JesterNet OS from:
 3. **Copy ISOs to USB**:
    ```
    USB Drive/
-   ├── archlinux-2024.01.01-x86_64.iso
+   ├── archlinux-2025.11.01-x86_64.iso
    └── ventoy/
        └── ventoy.json  (optional config)
    ```
@@ -41,7 +41,7 @@ Copy the entire `arch-install/` folder to the Ventoy USB:
 
 ```
 USB Drive/
-├── archlinux-2024.01.01-x86_64.iso
+├── archlinux-2025.11.01-x86_64.iso
 ├── JesterNet/
 │   ├── install.sh
 │   ├── install.conf.example
