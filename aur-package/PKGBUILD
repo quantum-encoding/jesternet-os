@@ -4,7 +4,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="JesterNet OS - Glassmorphic theme, icons, and development stack installers for Arch Linux"
 arch=('any')
-url="https://github.com/yourusername/jesternet-os"
+url="https://github.com/quantum-encoding/jesternet-os"
 license=('MIT')
 depends=(
     'gnome-shell'
@@ -27,13 +27,13 @@ makedepends=('git')
 provides=('jesternet-os' 'darkglass-theme' 'jesternet-icons')
 conflicts=('darkglass-theme')
 install=jesternet-os.install
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/yourusername/jesternet-os/archive/v${pkgver}.tar.gz")
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/quantum-encoding/jesternet-os/archive/v${pkgver}.tar.gz")
 # For local testing, use:
-# source=("jesternet-os::git+file:///home/founder/arch-linux-extensions/DarkGlass-Theme-Export")
+# source=("jesternet-os::git+file:///home/founder/arch-linux-extensions/jesternet-os")
 sha256sums=('SKIP')
 
 # For git source (development):
-# source=("git+https://github.com/yourusername/jesternet-os.git")
+# source=("git+https://github.com/quantum-encoding/jesternet-os.git")
 
 package() {
     cd "${srcdir}/${pkgname}-${pkgver}"

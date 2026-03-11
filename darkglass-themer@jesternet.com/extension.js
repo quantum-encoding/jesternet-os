@@ -142,7 +142,7 @@ class DarkGlassIndicator extends PanelMenu.Button {
     }
 
     _exportTheme() {
-        let exportPath = GLib.get_home_dir() + '/DarkGlass-Theme-Export';
+        let exportPath = GLib.get_home_dir() + '/jesternet-os';
         let sigma = this._settings.get_int('sigma');
         let opacity = this._settings.get_int('opacity');
         let brightness = this._settings.get_double('brightness');

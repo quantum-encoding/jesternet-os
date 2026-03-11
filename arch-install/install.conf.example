@@ -2,7 +2,7 @@
 # JesterNet Arch Install Configuration
 # ============================================================================
 # Copy this file to 'install.conf' and customize for automated installation
-# Usage: ./jesternet-arch-install.sh install.conf
+# Usage: ./install.sh install.conf
 # ============================================================================
 
 # Target disk (WILL BE ERASED!)

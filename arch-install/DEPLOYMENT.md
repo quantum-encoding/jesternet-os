@@ -43,7 +43,7 @@ Copy the entire `arch-install/` folder to the Ventoy USB:
 USB Drive/
 ├── archlinux-2024.01.01-x86_64.iso
 ├── JesterNet/
-│   ├── jesternet-arch-install.sh
+│   ├── install.sh
 │   ├── install.conf.example
 │   └── ... (theme files)
 ```
@@ -69,7 +69,7 @@ USB Drive/
    mount /dev/sdX1 /mnt
 
    # Run installer
-   bash /mnt/JesterNet/arch-install/jesternet-arch-install.sh
+   bash /mnt/JesterNet/arch-install/install.sh
    ```
 
 ---
@@ -122,14 +122,14 @@ adb devices
 **Option A: Push script and execute**
 ```bash
 # Clone JesterNet to Termux
-git clone https://github.com/yourusername/jesternet-os.git
+git clone https://github.com/quantum-encoding/jesternet-os.git
 
 # Push to target
 adb push jesternet-os/ /tmp/
 
 # Execute on target
-adb shell "chmod +x /tmp/jesternet-os/arch-install/jesternet-arch-install.sh"
-adb shell "/tmp/jesternet-os/arch-install/jesternet-arch-install.sh"
+adb shell "chmod +x /tmp/jesternet-os/arch-install/install.sh"
+adb shell "/tmp/jesternet-os/arch-install/install.sh"
 ```
 
 **Option B: Remote shell**
@@ -139,7 +139,7 @@ adb shell
 
 # Then run installer manually
 cd /tmp/jesternet-os/arch-install
-./jesternet-arch-install.sh
+./install.sh
 ```
 
 ### Full Quantum Field Medic Workflow
@@ -192,16 +192,16 @@ Boot any Arch ISO and run:
 iwctl station wlan0 connect "Your-SSID"
 
 # Download and run
-curl -sL https://raw.githubusercontent.com/yourusername/jesternet-os/main/arch-install/jesternet-arch-install.sh | bash
+curl -sL https://raw.githubusercontent.com/quantum-encoding/jesternet-os/master/install.sh | bash
 ```
 
 Or clone and run:
 
 ```bash
 pacman -Sy git
-git clone https://github.com/yourusername/jesternet-os.git
-cd jesternet-os/arch-install
-./jesternet-arch-install.sh
+git clone https://github.com/quantum-encoding/jesternet-os.git
+cd jesternet-os
+./install.sh
 ```
 
 ---
@@ -220,7 +220,7 @@ nano install.conf
 
 Then run:
 ```bash
-./jesternet-arch-install.sh install.conf
+./install.sh install.conf
 ```
 
 ### Example Config for Quick Deploy

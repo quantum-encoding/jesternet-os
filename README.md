@@ -83,7 +83,7 @@ The installer will guide you, but you'll need:
 ### 1. Clone or Download
 
 ```bash
-git clone https://github.com/yourusername/jesternet-os.git
+git clone https://github.com/quantum-encoding/jesternet-os.git
 cd jesternet-os
 ```
 
@@ -92,7 +92,7 @@ Or download and extract the ZIP.
 ### 2. Run the Installer
 
 ```bash
-./jesternet-setup.sh
+./install.sh
 ```
 
 This opens an interactive menu where you can:
@@ -206,7 +206,7 @@ Swift, Julia, Mojo, Docker, YAML, JSON, Markdown, and more
 Build cross-platform desktop apps with web technologies.
 
 ```bash
-./jesternet-setup.sh tauri
+./install.sh tauri
 ```
 
 **Installs:**
@@ -226,7 +226,7 @@ cd my-app && pnpm tauri dev
 Full Android development environment.
 
 ```bash
-./jesternet-setup.sh android
+./install.sh android
 ```
 
 **Installs:**
@@ -246,7 +246,7 @@ avdmanager create avd ...     # Create emulator
 Modern Go development setup.
 
 ```bash
-./jesternet-setup.sh go
+./install.sh go
 ```
 
 **Installs:**
@@ -267,7 +267,7 @@ cd my-app && task run
 Python with modern tooling.
 
 ```bash
-./jesternet-setup.sh python
+./install.sh python
 ```
 
 **Installs:**
@@ -287,7 +287,7 @@ cd my-app && poetry shell
 Modern frontend development.
 
 ```bash
-./jesternet-setup.sh web
+./install.sh web
 ```
 
 **Installs:**
@@ -530,8 +530,8 @@ MIT License - Free to use, modify, and distribute.
 
 ## Support
 
-- Issues: [GitHub Issues](https://github.com/yourusername/jesternet-os/issues)
-- Discussions: [GitHub Discussions](https://github.com/yourusername/jesternet-os/discussions)
+- Issues: [GitHub Issues](https://github.com/quantum-encoding/jesternet-os/issues)
+- Discussions: [GitHub Discussions](https://github.com/quantum-encoding/jesternet-os/discussions)
 
 ---
 
