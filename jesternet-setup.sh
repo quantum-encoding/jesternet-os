@@ -121,7 +121,7 @@ run_script() {
 }
 
 install_theme() {
-    run_script "$SCRIPT_DIR/install.sh" "DarkGlass Theme Installation"
+    run_script "$SCRIPT_DIR/install-theme.sh" "DarkGlass Theme Installation"
     # Prompt for desktop style after theme install
     echo ""
     read -p "Would you like to choose a desktop style now? [y/N] " style_choice
@@ -242,7 +242,7 @@ show_cli_help() {
 run_cli() {
     case "$1" in
         theme)
-            bash "$SCRIPT_DIR/install.sh"
+            bash "$SCRIPT_DIR/install-theme.sh"
             ;;
         dock|mac|macos)
             bash "$SCRIPT_DIR/desktop-style.sh" dock
@@ -278,7 +278,7 @@ run_cli() {
             bash "$DEV_STACKS_DIR/content-creator.sh"
             ;;
         full-dev)
-            bash "$SCRIPT_DIR/install.sh"
+            bash "$SCRIPT_DIR/install-theme.sh"
             bash "$DEV_STACKS_DIR/tauri-stack.sh"
             bash "$DEV_STACKS_DIR/go-stack.sh"
             bash "$DEV_STACKS_DIR/python-stack.sh"
@@ -286,7 +286,7 @@ run_cli() {
             bash "$DEV_STACKS_DIR/web-stack.sh"
             ;;
         full-creator)
-            bash "$SCRIPT_DIR/install.sh"
+            bash "$SCRIPT_DIR/install-theme.sh"
             bash "$DEV_STACKS_DIR/office-multimedia.sh"
             bash "$DEV_STACKS_DIR/content-creator.sh"
             ;;
