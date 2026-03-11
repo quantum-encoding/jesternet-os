@@ -339,12 +339,28 @@ configure_user() {
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
 
-    # If using config file, skip interactive prompts
+    # If using config file, skip interactive prompts (but require password)
     if [ -n "$CONFIG_FILE" ]; then
         log_step "Using configuration from $CONFIG_FILE"
         echo "  Hostname: $HOSTNAME"
         echo "  Username: $USERNAME"
         echo "  Timezone: $TIMEZONE"
+
+        # Password must still be set - prompt if missing from config
+        if [ -z "$USER_PASSWORD" ]; then
+            while true; do
+                read -s -p "Password: " USER_PASSWORD
+                echo ""
+                read -s -p "Confirm password: " USER_PASSWORD_CONFIRM
+                echo ""
+                if [ "$USER_PASSWORD" = "$USER_PASSWORD_CONFIRM" ]; then
+                    break
+                else
+                    log_error "Passwords do not match. Try again."
+                fi
+            done
+        fi
+
         log_success "Configuration loaded from file"
         return
     fi
