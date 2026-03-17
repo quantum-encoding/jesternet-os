@@ -65,16 +65,21 @@ One-click installation for complete development environments:
 ## Requirements
 
 - **Arch Linux** (or Arch-based: EndeavourOS, Manjaro)
-- **GNOME Desktop** (45+)
-- **8GB+ RAM** recommended
+- **GNOME Desktop** (45–49)
+- **4GB+ RAM** minimum (8GB recommended for development stacks)
 - **Internet connection** for package downloads
 
-### Required GNOME Extensions
-The installer will guide you, but you'll need:
-- [Blur My Shell](https://extensions.gnome.org/extension/3193/blur-my-shell/)
-- [Dash to Dock](https://extensions.gnome.org/extension/307/dash-to-dock/) (for Dock style)
-- [Dash to Panel](https://extensions.gnome.org/extension/1160/dash-to-panel/) (for Windows style)
-- [User Themes](https://extensions.gnome.org/extension/19/user-themes/)
+### Bundled GNOME Extensions
+The theme installer (`install-theme.sh`) automatically installs and enables all 19 bundled extensions including:
+- **Blur My Shell** — glassmorphic blur effects
+- **Dash to Dock** — macOS-style dock (Dock layout)
+- **Dash to Panel** — Windows-style taskbar (Start Bar layout)
+- **User Themes** — custom shell theme support
+- **Burn My Windows** — animated window close effects
+- **Tiling Shell** — window tiling/snapping
+- **Vitals** — system monitor in top bar
+- **Claude Shepherd** — monitor Claude Code instances from the desktop
+- **DarkGlass Themer** — live theme editor (colour wheel in top bar)
 
 ---
 
@@ -119,8 +124,8 @@ The installer will ask you to:
 Remove the USB and reboot. Log in and run:
 
 ```bash
-./install-yay.sh
-./setup-theme.sh
+cd jesternet-os
+bash install-theme.sh
 ```
 
 ### Alternative: Install from Ventoy USB
@@ -162,7 +167,7 @@ bash /mnt/ventoy/jesternet-os/install.sh
 
 **Features:**
 - Centered dock at bottom
-- Hover to reveal
+- Always visible by default (no auto-hide)
 - App icons with indicators for running apps
 - Trash icon on the right
 - Clean, minimal top bar
@@ -509,15 +514,29 @@ sudo pacman -S aria2
 ## File Structure
 
 ```
-JesterNet-OS/
-├── jesternet-setup.sh        # Main installer (interactive menu)
-├── install.sh                # Theme installer
+jesternet-os/
+├── install.sh                # Arch Linux installer (from live ISO)
+├── install-theme.sh          # DarkGlass theme installer (run after first login)
+├── desktop-style.sh          # Switch between Dock/Taskbar layouts
+├── jesternet-setup.sh        # Interactive setup menu
 ├── optimize-icons.sh         # Compress PNG icons
-├── README.md                 # This file
+│
+├── arch-install/             # Enterprise/advanced Arch install configs
 │
 ├── config/                   # GNOME/Extension configs
 │   ├── blur-my-shell.conf
-│   └── desktop-interface.conf
+│   ├── desktop-interface.conf
+│   └── wallpaper.jpg
+│
+├── extensions/               # 19 bundled GNOME extensions
+│   ├── blur-my-shell@aunetx/
+│   ├── claude-shepherd@quantum-forge/
+│   ├── burn-my-windows@schneegans.github.com/
+│   ├── tilingshell@ferrarodomenico.com/
+│   ├── Vitals@CoreCoding.com/
+│   └── ...
+│
+├── darkglass-themer@jesternet.com/  # Live theme editor extension
 │
 ├── dev-stacks/               # Development environment installers
 │   ├── common.sh             # Shared functions (aria2 setup)
@@ -537,7 +556,7 @@ JesterNet-OS/
 │
 ├── gtk/                      # GTK theme CSS
 ├── gnome-shell/              # Shell theme CSS
-└── darkglass-themer@.../     # Theme editor extension
+└── aur-package/              # AUR PKGBUILD for distribution
 ```
 
 ---
