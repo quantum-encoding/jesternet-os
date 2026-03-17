@@ -176,9 +176,9 @@ configure_dock_style() {
 
     # Configure Dash to Dock settings
     dconf write /org/gnome/shell/extensions/dash-to-dock/dock-position "'BOTTOM'"
-    dconf write /org/gnome/shell/extensions/dash-to-dock/dock-fixed false
-    dconf write /org/gnome/shell/extensions/dash-to-dock/autohide true
-    dconf write /org/gnome/shell/extensions/dash-to-dock/intellihide true
+    dconf write /org/gnome/shell/extensions/dash-to-dock/dock-fixed true
+    dconf write /org/gnome/shell/extensions/dash-to-dock/autohide false
+    dconf write /org/gnome/shell/extensions/dash-to-dock/intellihide false
     dconf write /org/gnome/shell/extensions/dash-to-dock/extend-height false
     dconf write /org/gnome/shell/extensions/dash-to-dock/dash-max-icon-size 48
     dconf write /org/gnome/shell/extensions/dash-to-dock/background-opacity 0.7
