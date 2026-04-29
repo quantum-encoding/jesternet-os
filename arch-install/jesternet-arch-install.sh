@@ -2156,14 +2156,116 @@ print_summary() {
 # Main
 # ============================================================================
 
+## ============================================================================
+## Resume support: state file + phase gating
+## ============================================================================
+##
+## After every successful phase, we snapshot enough state (TARGET_DISK, USERNAME,
+## partition variables, etc.) to /var/log/jesternet-install.state. If the script
+## crashes or the user Ctrl-Cs out, they can re-run with `--from <phase>` and we
+## reload state and skip everything before <phase>.
+STATE_FILE="${STATE_FILE:-/var/log/jesternet-install.state}"
+
+# Phases recognized by `--from`. Order matters — used to compute "skip until".
+ALL_PHASES=(
+    partition_disk
+    install_base_system
+    configure_system
+    install_desktop
+    install_jesternet_theme
+    install_dev_stacks
+    configure_enterprise
+    install_terminal_stack
+    install_aur_helper
+    cleanup
+)
+
+RESUME_FROM=""        # set by --from; empty means full install
+_RESUME_REACHED=0     # flips to 1 once we hit RESUME_FROM in main()
+
+save_state() {
+    # Persist enough variables to resume from any phase. Append-mode each call
+    # so a corrupted later write can't lose earlier data.
+    {
+        printf '# auto-saved %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'TARGET_DISK=%q\n'  "${TARGET_DISK:-}"
+        printf 'PART_PREFIX=%q\n'  "${PART_PREFIX:-}"
+        printf 'EFI_PART=%q\n'     "${EFI_PART:-}"
+        printf 'SWAP_PART=%q\n'    "${SWAP_PART:-}"
+        printf 'ROOT_PART=%q\n'    "${ROOT_PART:-}"
+        printf 'HOME_PART=%q\n'    "${HOME_PART:-}"
+        printf 'EFI_SIZE=%q\n'     "${EFI_SIZE:-}"
+        printf 'SWAP_SIZE=%q\n'    "${SWAP_SIZE:-}"
+        printf 'ROOT_SIZE=%q\n'    "${ROOT_SIZE:-}"
+        printf 'HOME_SIZE=%q\n'    "${HOME_SIZE:-}"
+        printf 'HOSTNAME=%q\n'     "${HOSTNAME:-}"
+        printf 'USERNAME=%q\n'     "${USERNAME:-}"
+        printf 'TIMEZONE=%q\n'     "${TIMEZONE:-}"
+        printf 'LOCALE=%q\n'       "${LOCALE:-}"
+        printf 'KEYMAP=%q\n'       "${KEYMAP:-}"
+        printf 'DESKTOP_STYLE=%q\n' "${DESKTOP_STYLE:-}"
+        printf 'DEV_STACKS=%q\n'   "${DEV_STACKS:-}"
+        printf 'MIRROR_COUNTRY=%q\n' "${MIRROR_COUNTRY:-}"
+    } > "$STATE_FILE" 2>/dev/null || true
+}
+
+load_state() {
+    if [ ! -r "$STATE_FILE" ]; then
+        log_error "Cannot --from: no state file at $STATE_FILE"
+        log_error "Either re-run from scratch, or set TARGET_DISK / USERNAME etc. via env."
+        exit 1
+    fi
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
+    log_step "Loaded resume state from $STATE_FILE (TARGET=$TARGET_DISK, USER=$USERNAME)"
+}
+
+# Gate phase execution under --from. Returns 0 if the phase should run, 1 if
+# we're still skipping. Once we hit RESUME_FROM, every subsequent phase runs.
+should_run_phase() {
+    local phase="$1"
+    [ -z "$RESUME_FROM" ] && return 0
+    if [ "$_RESUME_REACHED" = "1" ]; then return 0; fi
+    if [ "$phase" = "$RESUME_FROM" ]; then
+        _RESUME_REACHED=1
+        return 0
+    fi
+    log_step "  --skip $phase (before --from=$RESUME_FROM)"
+    return 1
+}
+
+print_phases() {
+    echo "Available phases (use with --from <phase>):"
+    for p in "${ALL_PHASES[@]}"; do echo "  $p"; done
+}
+
 main() {
     print_banner
     init_install_log     # set up persistent log before anything else
-    preflight_checks
-    select_disk
-    configure_user
-    select_desktop_style
-    select_dev_stacks
+
+    # Resume mode: skip the interactive prompts entirely, load state, jump
+    # straight to the requested phase. Otherwise, run the normal flow.
+    if [ -n "$RESUME_FROM" ]; then
+        load_state
+        log_step "RESUMING from phase: $RESUME_FROM"
+        # Re-validate the resume point is one of the known phases.
+        local valid=0
+        for p in "${ALL_PHASES[@]}"; do [ "$p" = "$RESUME_FROM" ] && valid=1; done
+        if [ "$valid" = "0" ]; then
+            log_error "Unknown phase '$RESUME_FROM'."
+            print_phases
+            exit 1
+        fi
+        # Skip preflight only if we're past the early phases that need it.
+        # Pre-pacstrap phases need preflight (network, mirrors); after that
+        # we still want it (clock, keyring) but never fatal.
+        preflight_checks || true
+    else
+        preflight_checks
+        select_disk
+        configure_user
+        select_desktop_style
+        select_dev_stacks
 
     # Confirmation
     echo ""
@@ -2181,37 +2283,64 @@ main() {
     echo -e "${RED}WARNING: This will ERASE ALL DATA on $TARGET_DISK${NC}"
     echo ""
 
-    # Auto-confirm if using config file, otherwise prompt
-    if [ -n "$CONFIG_FILE" ]; then
-        log_step "Auto-confirming installation from config file..."
-        sleep 2
-    else
-        read -p "Begin installation? [y/N]: " final_confirm
-        if [[ ! "$final_confirm" =~ ^[Yy]$ ]]; then
-            echo "Installation cancelled"
-            exit 0
+        # Auto-confirm if using config file, otherwise prompt
+        if [ -n "$CONFIG_FILE" ]; then
+            log_step "Auto-confirming installation from config file..."
+            sleep 2
+        else
+            read -p "Begin installation? [y/N]: " final_confirm
+            if [[ ! "$final_confirm" =~ ^[Yy]$ ]]; then
+                echo "Installation cancelled"
+                exit 0
+            fi
+        fi
+    fi  # end full-flow vs --resume guard
+
+    # Phases 1-3 are FATAL on failure — without them you have no bootable system.
+    # When resuming, prepare_clean_state is harmful (would unmount /mnt that we
+    # need to keep mounted to write the rest of the install). Skip it on resume.
+    if should_run_phase partition_disk; then
+        prepare_clean_state
+        partition_disk
+        save_state
+    fi
+    if should_run_phase install_base_system; then
+        install_base_system
+        save_state
+    fi
+    if should_run_phase configure_system; then
+        configure_system
+        save_state
+    fi
+
+    # If resuming and /mnt isn't mounted, the recoverable phases below will
+    # all fail (chroot needs /mnt). Re-mount the existing partitions.
+    if [ -n "$RESUME_FROM" ] && [ "$RESUME_FROM" != "partition_disk" ] && [ "$RESUME_FROM" != "install_base_system" ]; then
+        if ! mountpoint -q /mnt 2>/dev/null; then
+            log_step "Resume: /mnt not mounted — remounting from saved state"
+            mount "$ROOT_PART" /mnt 2>/dev/null \
+                || die "Could not remount $ROOT_PART to /mnt"
+            mkdir -p /mnt/boot/efi /mnt/home
+            mount "$EFI_PART"  /mnt/boot/efi 2>/dev/null || log_warning "  EFI mount failed"
+            mount "$HOME_PART" /mnt/home     2>/dev/null || log_warning "  HOME mount failed"
+            swapon "$SWAP_PART"               2>/dev/null || log_warning "  swapon failed"
+            log_success "  /mnt remounted"
         fi
     fi
 
-    # Phases 1-3 are FATAL on failure — without them you have no bootable system.
-    # Each calls `die` internally if it can't continue.
-    prepare_clean_state    # recover from any prior failed run before touching disk
-    partition_disk
-    install_base_system
-    configure_system
-
     # Phases 4-8 are RECOVERABLE — we soldier on through any of them failing.
-    # Each is wrapped so a hiccup (mirror, package conflict, AUR network blip)
-    # doesn't leave the user with a half-installed system. Failures get
-    # collected into FAILED_STEPS for the end-of-install summary.
-    try_func "Install GNOME desktop"     install_desktop
-    try_func "Install JesterNet theme"   install_jesternet_theme
-    try_func "Install dev stacks"        install_dev_stacks
-    try_func "Apply enterprise config"   configure_enterprise
-    try_func "Install terminal stack"    install_terminal_stack
-    try_func "Install AUR helper (yay)"  install_aur_helper
+    if should_run_phase install_desktop;          then try_func "Install GNOME desktop"     install_desktop;          save_state; fi
+    if should_run_phase install_jesternet_theme;  then try_func "Install JesterNet theme"   install_jesternet_theme;  save_state; fi
+    if should_run_phase install_dev_stacks;       then try_func "Install dev stacks"        install_dev_stacks;       save_state; fi
+    if should_run_phase configure_enterprise;     then try_func "Apply enterprise config"   configure_enterprise;     save_state; fi
+    if should_run_phase install_terminal_stack;   then try_func "Install terminal stack"    install_terminal_stack;   save_state; fi
+    if should_run_phase install_aur_helper;       then try_func "Install AUR helper (yay)"  install_aur_helper;       save_state; fi
 
-    cleanup
+    if should_run_phase cleanup; then
+        cleanup
+        # Don't save_state after cleanup — the file lives on /var/log of the
+        # live ISO, doesn't need to persist past install completion.
+    fi
     print_summary
     print_failure_summary
 }
@@ -2220,12 +2349,50 @@ main() {
 # Entry Point
 # ============================================================================
 
-# Check for optional config file argument. Use ${1:-} so set -u doesn't trip
-# when the script is invoked without any arguments (the common case).
-if [ -n "${1:-}" ] && [ -f "$1" ]; then
-    CONFIG_FILE="$1"
-    log_step "Loading configuration from $CONFIG_FILE"
-    source "$CONFIG_FILE"
-fi
+# CLI parsing. Order-tolerant: any of these can appear in any position.
+#   --from <phase>      resume from a specific phase (state auto-loaded)
+#   --list-phases       print phase names then exit
+#   <path/to/config>    optional config file (positional, legacy)
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from)
+            RESUME_FROM="${2:-}"
+            if [ -z "$RESUME_FROM" ]; then
+                echo "ERROR: --from requires a phase name. Try --list-phases." >&2
+                exit 2
+            fi
+            shift 2
+            ;;
+        --list-phases)
+            print_phases
+            exit 0
+            ;;
+        --help|-h)
+            cat <<HELP
+JesterNet OS Installer
+
+  bash install.sh                       full interactive install
+  bash install.sh path/to/config.conf   non-interactive from config file
+  bash install.sh --from <phase>        resume from a specific phase
+                                        (state auto-loaded from
+                                        $STATE_FILE)
+  bash install.sh --list-phases         show valid --from phase names
+HELP
+            exit 0
+            ;;
+        *)
+            if [ -f "$1" ]; then
+                CONFIG_FILE="$1"
+                log_step "Loading configuration from $CONFIG_FILE"
+                source "$CONFIG_FILE"
+            else
+                echo "ERROR: unknown argument or missing file: $1" >&2
+                echo "Try: bash $0 --help" >&2
+                exit 2
+            fi
+            shift
+            ;;
+    esac
+done
 
 main
