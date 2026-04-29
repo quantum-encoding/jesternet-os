@@ -15,10 +15,23 @@
 # Deploy from: Ventoy USB | Android ADB | Any Live Environment
 # ============================================================================
 
-set -e
+# Resilience: NO `set -e`. We track failures explicitly and soldier on through
+# non-critical errors. Fatal failures (partition, pacstrap, bootloader) call
+# `die` to abort. Everything else uses `try_step` to log + continue.
+#
+# This is the "fighter-jet" install: a hiccup in nvidia or theme install must
+# not crash the partitioning or leave a half-installed system. The user should
+# always reach a bootable Arch with a summary of what to fix manually.
+set -u  # error on unset vars, but not on command failures
+set -o pipefail  # bubble pipe failures up to $? so try_step sees them
 
 # Ensure TERM is set (required for SSH/ADB deployments)
 export TERM="${TERM:-xterm}"
+
+# Failure ledger — populated by try_step / try_func, printed at end.
+FAILED_STEPS=()
+SKIPPED_STEPS=()
+INSTALL_LOG="/var/log/jesternet-install.log"
 
 # ============================================================================
 # Configuration - EDIT THESE FOR YOUR SETUP
@@ -89,20 +102,121 @@ NC='\033[0m'
 # Logging
 # ============================================================================
 
+_log_to_file() {
+    # Write a plain copy (no colour codes) to the install log if it exists.
+    [ -n "${INSTALL_LOG:-}" ] && [ -w "$(dirname "$INSTALL_LOG")" ] && \
+        printf '[%s] %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$1" >> "$INSTALL_LOG" 2>/dev/null || true
+}
+
 log_step() {
     echo -e "${CYAN}[$(date +%H:%M:%S)]${NC} $1"
+    _log_to_file "STEP    $1"
 }
 
 log_success() {
     echo -e "${GREEN}✓${NC} $1"
+    _log_to_file "OK      $1"
 }
 
 log_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
+    _log_to_file "WARN    $1"
 }
 
 log_error() {
     echo -e "${RED}✗${NC} $1"
+    _log_to_file "ERROR   $1"
+}
+
+# ============================================================================
+# Resilience helpers — "fighter-jet" mode
+# ============================================================================
+
+# Init the persistent install log. Called once early in main().
+init_install_log() {
+    # Prefer /var/log (always writable as root in live ISO), fallback to /tmp.
+    local d
+    d="$(dirname "$INSTALL_LOG")"
+    mkdir -p "$d" 2>/dev/null
+    if ! ( : > "$INSTALL_LOG" ) 2>/dev/null; then
+        INSTALL_LOG="/tmp/jesternet-install.log"
+        : > "$INSTALL_LOG" 2>/dev/null || INSTALL_LOG=""
+    fi
+    if [ -n "$INSTALL_LOG" ]; then
+        log_step "install log: $INSTALL_LOG"
+    fi
+}
+
+# Fatal: stop the install. Use only when continuing would corrupt the system
+# (failed partitioning, pacstrap, or bootloader install).
+die() {
+    log_error "FATAL: $*"
+    log_error "Cannot continue. Log: ${INSTALL_LOG:-<no log>}"
+    print_failure_summary
+    exit 1
+}
+
+# Run a named function, tolerating its failures. Used for the install phases
+# that are nice-to-have (theme, dev-stacks, AUR helper, enterprise config).
+try_func() {
+    local desc="$1"
+    local fn="$2"
+    log_step ">>> $desc"
+    if ( "$fn" ); then
+        log_success "$desc"
+        return 0
+    fi
+    local rc=$?
+    log_error "$desc failed (rc=$rc) — continuing"
+    FAILED_STEPS+=("$desc (rc=$rc)")
+    return $rc
+}
+
+# Run a single command tolerantly. Returns the command's rc but logs a
+# failure into FAILED_STEPS without aborting.
+# Usage: try_cmd "human description" -- pacman -S --noconfirm foo bar
+try_cmd() {
+    local desc="$1"
+    shift
+    [ "${1:-}" = "--" ] && shift
+    log_step "$desc"
+    if "$@"; then
+        log_success "$desc"
+        return 0
+    fi
+    local rc=$?
+    log_error "$desc — exit $rc (continuing)"
+    FAILED_STEPS+=("$desc (rc=$rc)")
+    return $rc
+}
+
+print_failure_summary() {
+    if [ "${#FAILED_STEPS[@]}" -eq 0 ] && [ "${#SKIPPED_STEPS[@]}" -eq 0 ]; then
+        return
+    fi
+    echo ""
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}            STEPS THAT NEED MANUAL ATTENTION${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════════${NC}"
+    if [ "${#FAILED_STEPS[@]}" -gt 0 ]; then
+        echo -e "${RED}Failed:${NC}"
+        for s in "${FAILED_STEPS[@]}"; do
+            echo "  ✗ $s"
+        done
+    fi
+    if [ "${#SKIPPED_STEPS[@]}" -gt 0 ]; then
+        echo -e "${YELLOW}Skipped:${NC}"
+        for s in "${SKIPPED_STEPS[@]}"; do
+            echo "  · $s"
+        done
+    fi
+    echo ""
+    echo -e "${CYAN}Full log: ${INSTALL_LOG:-<none>}${NC}"
+    echo -e "${CYAN}Most issues can be fixed after first boot with:${NC}"
+    echo "  sudo pacman -Syu                 # bring everything in sync"
+    echo "  sudo pacman -S --needed <pkg>    # retry a missing package"
+    echo "  cd ~/JesterNet && bash install-dev-stacks.sh    # retry dev stacks"
+    echo ""
 }
 
 # ============================================================================
@@ -584,6 +698,21 @@ partition_disk() {
 install_base_system() {
     log_step "Installing base system (this may take a while)..."
 
+    # Tune the LIVE ISO's pacman.conf for parallel downloads + aria2 retries.
+    # This speeds up pacstrap and gives us aria2's resilient retry behaviour
+    # for free on the very first download cycle.
+    log_step "Tuning live-ISO pacman.conf for parallel/aria2 downloads..."
+    if ! grep -q '^ParallelDownloads' /etc/pacman.conf; then
+        sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 8/' /etc/pacman.conf
+        grep -q '^ParallelDownloads' /etc/pacman.conf || \
+            echo 'ParallelDownloads = 8' >> /etc/pacman.conf
+    fi
+    # aria2 may not be installed on the ISO itself; only set XferCommand if present.
+    if command -v aria2c &>/dev/null && ! grep -q '^XferCommand' /etc/pacman.conf; then
+        sed -i '/^\[options\]/a XferCommand = /usr/bin/aria2c --allow-overwrite=true --continue=true --file-allocation=none --log-level=error --max-tries=4 --max-connection-per-server=8 --max-file-not-found=4 --min-split-size=5M --no-conf --remote-time=true --summary-interval=60 --timeout=10 --retry-wait=1 --console-log-level=error --download-result=hide --quiet -d / -o %o %u' /etc/pacman.conf
+    fi
+    log_success "Pacman tuned"
+
     # Update mirrorlist for faster downloads
     log_step "Optimizing mirror list..."
 
@@ -614,14 +743,19 @@ MIRRORS
     echo "KEYMAP=${KEYMAP}" > /mnt/etc/vconsole.conf
     log_success "vconsole.conf pre-created"
 
-    # Install base system with download timeout disabled for slow connections
-    log_step "Running pacstrap (downloading ~800MB)..."
-    pacstrap -K /mnt \
+    # Install base system with download timeout disabled for slow connections.
+    # `linux-lts` is included as a fallback kernel — if a future `pacman -Syu`
+    # pulls a broken `linux` (e.g. v7 mismatch), the user can boot LTS from
+    # the GRUB menu and recover. Standard Arch best practice.
+    log_step "Running pacstrap (downloading ~1GB — base + linux + linux-lts)..."
+    if ! pacstrap -K /mnt \
         base \
         base-devel \
         linux \
+        linux-lts \
         linux-firmware \
         linux-headers \
+        linux-lts-headers \
         intel-ucode \
         amd-ucode \
         networkmanager \
@@ -643,15 +777,39 @@ MIRRORS
         texinfo \
         openssh \
         reflector
+    then
+        die "pacstrap failed — base system did not install. Cannot continue."
+    fi
 
-    log_success "Base system installed"
+    log_success "Base system installed (linux + linux-lts as fallback)"
 
     # Copy optimized mirrorlist to new system
     cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
 
+    # Mirror the pacman.conf tuning into the target system AND defensively pin
+    # the kernel during the install. The IgnorePkg line prevents any subsequent
+    # `pacman -Syu` (run inside chroot during config) from yanking `linux` out
+    # from under a running ISO that has older kernel headers — the exact failure
+    # path that bricks NVIDIA/DKMS installs mid-flight.
+    log_step "Tuning target pacman.conf (parallel + aria2 + kernel pin)..."
+    if ! grep -q '^ParallelDownloads' /mnt/etc/pacman.conf; then
+        sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 8/' /mnt/etc/pacman.conf
+        grep -q '^ParallelDownloads' /mnt/etc/pacman.conf || \
+            echo 'ParallelDownloads = 8' >> /mnt/etc/pacman.conf
+    fi
+    if ! grep -q '^XferCommand' /mnt/etc/pacman.conf; then
+        sed -i '/^\[options\]/a XferCommand = /usr/bin/aria2c --allow-overwrite=true --continue=true --file-allocation=none --log-level=error --max-tries=4 --max-connection-per-server=8 --max-file-not-found=4 --min-split-size=5M --no-conf --remote-time=true --summary-interval=60 --timeout=10 --retry-wait=1 --console-log-level=error --download-result=hide --quiet -d / -o %o %u' /mnt/etc/pacman.conf
+    fi
+    if ! grep -q '^IgnorePkg.*linux' /mnt/etc/pacman.conf; then
+        sed -i '/^\[options\]/a IgnorePkg   = linux linux-headers linux-firmware linux-lts linux-lts-headers' /mnt/etc/pacman.conf
+    fi
+    log_success "Target pacman tuned + kernel pinned for install duration"
+
     # Generate fstab
     log_step "Generating fstab..."
-    genfstab -U /mnt >> /mnt/etc/fstab
+    if ! genfstab -U /mnt >> /mnt/etc/fstab; then
+        die "fstab generation failed — system would not mount on boot."
+    fi
     log_success "fstab generated"
 }
 
@@ -662,14 +820,21 @@ MIRRORS
 configure_system() {
     log_step "Configuring system..."
 
-    # Create configuration script to run inside chroot
+    # Create configuration script to run inside chroot.
+    # NOTE: no `set -e`. Each command checks $? and either retries / warns /
+    # falls back. The only fatal step is GRUB install — without it the system
+    # won't boot, so we explicitly exit 1 there.
     cat > /mnt/root/chroot-setup.sh << CHROOT_EOF
 #!/bin/bash
-set -e
+# Don't bail on first error — continue and report.
+set +e
+
+CHROOT_FAILS=0
+chroot_warn() { echo "  ⚠ \$1 failed (rc=\$?)" >&2; CHROOT_FAILS=\$((CHROOT_FAILS+1)); }
 
 # Timezone
-ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
-hwclock --systohc
+ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime || chroot_warn "timezone link"
+hwclock --systohc || chroot_warn "hwclock"
 
 # Locale
 echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
@@ -704,18 +869,34 @@ echo "%wheel ALL=(ALL:ALL) ALL" >> /etc/sudoers
 systemctl enable NetworkManager
 systemctl enable fstrim.timer
 
-# Install GRUB (--removable ensures compatibility with Ventoy and various UEFI implementations)
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=JesterNet --removable
-grub-mkconfig -o /boot/grub/grub.cfg
+# Install GRUB. This IS fatal — without it the system won't boot. Try once,
+# retry once with --no-nvram for stubborn UEFI firmware, then bail.
+if ! grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=JesterNet --removable; then
+    echo "  ⚠ first grub-install failed — retrying with --no-nvram"
+    if ! grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=JesterNet --removable --no-nvram; then
+        echo "  ✗ grub-install failed twice — system will not boot"
+        exit 1
+    fi
+fi
+grub-mkconfig -o /boot/grub/grub.cfg || { echo "  ✗ grub-mkconfig failed"; exit 1; }
 
-# Create initial ramdisk
-mkinitcpio -P
+# Create initial ramdisk for both kernels — failure here = unbootable system.
+if ! mkinitcpio -P; then
+    echo "  ✗ mkinitcpio failed — initramfs not generated"
+    exit 1
+fi
 
-echo "Base configuration complete"
+if [ "\$CHROOT_FAILS" -gt 0 ]; then
+    echo "Base configuration complete with \$CHROOT_FAILS non-fatal warnings (see above)"
+else
+    echo "Base configuration complete"
+fi
 CHROOT_EOF
 
     chmod +x /mnt/root/chroot-setup.sh
-    arch-chroot /mnt /bin/bash /root/chroot-setup.sh
+    if ! arch-chroot /mnt /bin/bash /root/chroot-setup.sh; then
+        die "chroot-setup.sh hit a fatal error (bootloader/initramfs). System will not boot."
+    fi
 
     log_success "System configured"
 }
@@ -727,73 +908,75 @@ CHROOT_EOF
 install_desktop() {
     log_step "Installing GNOME desktop environment..."
 
+    # NOTE: no `set -e`. If a single package group fails (e.g. AUR sync, mirror
+    # hiccup), the rest still install. We retry once with --refresh on group
+    # failure to recover from stale package metadata — the second-most-common
+    # failure mode after kernel mismatch.
     cat > /mnt/root/install-desktop.sh << 'DESKTOP_EOF'
 #!/bin/bash
-set -e
+set +e
+DESKTOP_FAILS=0
+
+# Helper: try a pacman group, retry once with --refresh if it fails.
+try_group() {
+    local label="$1"; shift
+    if pacman -S --noconfirm --needed "$@"; then
+        return 0
+    fi
+    echo "  ⚠ $label failed first attempt — refreshing mirrors and retrying"
+    pacman -Syy --noconfirm
+    if pacman -S --noconfirm --needed "$@"; then
+        return 0
+    fi
+    echo "  ✗ $label failed twice — continuing without it"
+    DESKTOP_FAILS=$((DESKTOP_FAILS+1))
+    return 1
+}
 
 # Install GNOME and essentials
-pacman -S --noconfirm --needed \
-    gnome \
-    gnome-tweaks \
-    gnome-shell-extensions \
-    gdm \
-    gnome-browser-connector \
-    dconf-editor \
-    file-roller \
-    evince \
-    gnome-calculator \
-    gnome-calendar \
-    gnome-clocks \
-    gnome-font-viewer \
-    gnome-logs \
-    gnome-system-monitor \
-    gnome-weather \
-    gnome-disk-utility \
-    baobab \
-    loupe \
-    gedit
+try_group "GNOME core" \
+    gnome gnome-tweaks gnome-shell-extensions gdm gnome-browser-connector \
+    dconf-editor file-roller evince gnome-calculator gnome-calendar \
+    gnome-clocks gnome-font-viewer gnome-logs gnome-system-monitor \
+    gnome-weather gnome-disk-utility baobab loupe gedit
 
 # Audio (PipeWire) - --ask 4 auto-resolves conflicts (e.g. jack2 vs pipewire-jack)
 pacman -S --noconfirm --needed --ask 4 \
-    pipewire \
-    pipewire-alsa \
-    pipewire-pulse \
-    pipewire-jack \
-    wireplumber \
-    pavucontrol
+    pipewire pipewire-alsa pipewire-pulse pipewire-jack wireplumber pavucontrol \
+    || { echo "  ⚠ PipeWire stack failed — sound may not work"; DESKTOP_FAILS=$((DESKTOP_FAILS+1)); }
 
 # Fonts
-pacman -S --noconfirm --needed \
-    ttf-dejavu \
-    ttf-liberation \
-    noto-fonts \
-    noto-fonts-emoji \
-    ttf-fira-code \
-    ttf-jetbrains-mono
+try_group "fonts" \
+    ttf-dejavu ttf-liberation noto-fonts noto-fonts-emoji ttf-fira-code ttf-jetbrains-mono
 
 # Essential apps
-pacman -S --noconfirm --needed \
-    firefox \
-    kitty \
-    thunar \
-    nautilus \
-    gnome-terminal
+try_group "essential apps" \
+    firefox kitty thunar nautilus gnome-terminal
 
 # GTK Themes (Orchis)
-pacman -S --noconfirm --needed \
-    gtk-engine-murrine \
-    sassc
+try_group "GTK theme deps" \
+    gtk-engine-murrine sassc
 
-# Enable GDM
-systemctl enable gdm
+# Enable GDM (must succeed for graphical login to work)
+if ! systemctl enable gdm; then
+    echo "  ⚠ failed to enable gdm — log in via tty, then 'systemctl enable gdm' manually"
+    DESKTOP_FAILS=$((DESKTOP_FAILS+1))
+fi
 
+if [ "$DESKTOP_FAILS" -gt 0 ]; then
+    echo "Desktop install complete with $DESKTOP_FAILS issues — see above"
+    exit 0  # still don't propagate failure; GNOME core may have worked
+fi
 echo "Desktop installation complete"
 DESKTOP_EOF
 
     chmod +x /mnt/root/install-desktop.sh
-    arch-chroot /mnt /bin/bash /root/install-desktop.sh
+    if ! arch-chroot /mnt /bin/bash /root/install-desktop.sh; then
+        log_warning "Desktop install reported failures — system will boot but may need manual fixes"
+        FAILED_STEPS+=("desktop install (some packages)")
+    fi
 
-    log_success "GNOME desktop installed"
+    log_success "GNOME desktop install phase complete"
 }
 
 # ============================================================================
@@ -1073,16 +1256,41 @@ KRBEOF
 install_aur_helper() {
     log_step "Installing yay (AUR helper)..."
 
-    # yay must be built as a regular user, so create a first-boot script
+    # yay must be built as a regular user, so create a first-boot script.
+    # Tolerant: each step checks rc, network failure → retry once, build
+    # failure → leave dir for manual recovery instead of vanishing silently.
     cat > /mnt/home/${USERNAME}/install-yay.sh << 'YAY_USER_EOF'
 #!/bin/bash
-cd /tmp
-git clone https://aur.archlinux.org/yay.git
-cd yay
-makepkg -si --noconfirm
-cd ..
-rm -rf yay
-echo "yay installed successfully!"
+set +e
+cd /tmp || exit 1
+rm -rf yay 2>/dev/null
+
+# Retry git clone once on network blip
+for attempt in 1 2; do
+    if git clone https://aur.archlinux.org/yay.git; then
+        break
+    fi
+    echo "git clone failed (attempt $attempt) — retrying in 3s"
+    sleep 3
+    rm -rf yay 2>/dev/null
+done
+
+if [ ! -d /tmp/yay ]; then
+    echo "✗ Could not clone yay AUR repo. Run this script again with internet access."
+    exit 1
+fi
+
+cd yay || exit 1
+if makepkg -si --noconfirm; then
+    cd .. && rm -rf yay
+    echo "✓ yay installed successfully!"
+    exit 0
+else
+    cd ..
+    echo "⚠ yay build failed. Source left in /tmp/yay for manual fix-up:"
+    echo "    cd /tmp/yay && makepkg -si --noconfirm"
+    exit 1
+fi
 YAY_USER_EOF
 
     chmod +x /mnt/home/${USERNAME}/install-yay.sh
@@ -1174,6 +1382,7 @@ print_summary() {
 
 main() {
     print_banner
+    init_install_log     # set up persistent log before anything else
     preflight_checks
     select_disk
     configure_user
@@ -1208,17 +1417,25 @@ main() {
         fi
     fi
 
-    # Run installation
+    # Phases 1-3 are FATAL on failure — without them you have no bootable system.
+    # Each calls `die` internally if it can't continue.
     partition_disk
     install_base_system
     configure_system
-    install_desktop
-    install_jesternet_theme
-    install_dev_stacks
-    configure_enterprise
-    install_aur_helper
+
+    # Phases 4-8 are RECOVERABLE — we soldier on through any of them failing.
+    # Each is wrapped so a hiccup (mirror, package conflict, AUR network blip)
+    # doesn't leave the user with a half-installed system. Failures get
+    # collected into FAILED_STEPS for the end-of-install summary.
+    try_func "Install GNOME desktop"     install_desktop
+    try_func "Install JesterNet theme"   install_jesternet_theme
+    try_func "Install dev stacks"        install_dev_stacks
+    try_func "Apply enterprise config"   configure_enterprise
+    try_func "Install AUR helper (yay)"  install_aur_helper
+
     cleanup
     print_summary
+    print_failure_summary
 }
 
 # ============================================================================
