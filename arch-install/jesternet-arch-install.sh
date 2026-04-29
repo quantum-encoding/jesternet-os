@@ -28,6 +28,25 @@ set -o pipefail  # bubble pipe failures up to $? so try_step sees them
 # Ensure TERM is set (required for SSH/ADB deployments)
 export TERM="${TERM:-xterm}"
 
+# ----------------------------------------------------------------------------
+# Default-init every variable that may be set by an optional config file.
+# Without these, set -u trips the moment any code-path checks `[ -n "$VAR" ]`
+# while running interactively (no config file sourced). Use := so an existing
+# value (e.g. exported in the env) wins; otherwise the var becomes "".
+# ----------------------------------------------------------------------------
+: "${CONFIG_FILE:=}"            # path to sourced config file, if any
+: "${TARGET_DISK:=}"            # /dev/nvmeXn1 or /dev/sdX from config
+: "${USER_PASSWORD:=}"          # if set, skip interactive prompt
+: "${DESKTOP_STYLE:=}"          # dock | windows
+: "${DEV_STACKS:=}"             # space-separated list, e.g. "tauri go python"
+: "${MIRROR_COUNTRY:=}"         # reflector --country argument
+: "${STATIC_IP:=}"              # CIDR static IP for enterprise config
+: "${GATEWAY:=}"                # gateway IP, paired with STATIC_IP
+: "${HTTP_PROXY:=}"             # proxy URL for /etc/environment
+: "${SSH_AUTHORIZED_KEYS:=}"    # path to authorized_keys to seed
+: "${DOMAIN_REALM:=}"           # AD/realm join string
+: "${POST_INSTALL_HOOK:=}"      # extra script to run at the end
+
 # Failure ledger — populated by try_step / try_func, printed at end.
 FAILED_STEPS=()
 SKIPPED_STEPS=()
@@ -155,6 +174,40 @@ die() {
     print_failure_summary
     exit 1
 }
+
+# ---------------------------------------------------------------------------
+# Visible exit — runs on ANY non-zero exit (die, set -u trip, SIGINT, broken
+# pipe, etc.) so the user is never left guessing what happened. Without this,
+# a die on a noisy pacstrap failure scrolls off-screen and the user just sees
+# their live ISO prompt come back.
+# ---------------------------------------------------------------------------
+_on_exit() {
+    local rc=$?
+    trap - EXIT      # don't recurse if anything below errors
+    [[ $rc -eq 0 ]] && return 0
+
+    printf '\n%b\n' "${RED:-}═══════════════════════════════════════════════════════════════${NC:-}"
+    printf '%b\n'   "${RED:-}  ✗ JESTERNET INSTALL ABORTED  (exit ${rc})${NC:-}"
+    printf '%b\n'   "${RED:-}═══════════════════════════════════════════════════════════════${NC:-}"
+
+    if [[ -n "${INSTALL_LOG:-}" && -f "${INSTALL_LOG}" ]]; then
+        printf '\n%b\n' "${YELLOW:-}Last 40 lines of ${INSTALL_LOG}:${NC:-}"
+        tail -n 40 "$INSTALL_LOG" 2>/dev/null
+    else
+        printf '\n%b\n' "${YELLOW:-}(no install log was created)${NC:-}"
+    fi
+
+    printf '\n%b\n' "${YELLOW:-}To investigate:${NC:-}"
+    printf '  less %s\n' "${INSTALL_LOG:-/var/log/jesternet-install.log}"
+    printf '  lsblk                            # see partitions / mount state\n'
+    printf '  mount | grep /mnt                # see anything stuck mounted\n'
+    printf '  bash %s    # retry — prepare_clean_state recovers prior state\n' "${0:-install.sh}"
+
+    printf '\n%b' "${YELLOW:-}Press Enter to drop to the live ISO shell...${NC:-}"
+    read -r < /dev/tty 2>/dev/null || true
+    exit "$rc"
+}
+trap _on_exit EXIT
 
 # Run a named function, tolerating its failures. Used for the install phases
 # that are nice-to-have (theme, dev-stacks, AUR helper, enterprise config).
@@ -386,27 +439,67 @@ preflight_checks() {
 # Disk Selection
 # ============================================================================
 
+# Populate DISK_LIST as a global array, used by both list_disks and select_disk.
+_collect_disks() {
+    DISK_LIST=()
+    while IFS= read -r line; do
+        # Skip removable loop/optical/floppy/ram devices
+        local name
+        name=$(awk '{print $1}' <<<"$line")
+        case "$name" in
+            /dev/loop*|/dev/sr*|/dev/fd*|/dev/ram*) continue ;;
+        esac
+        DISK_LIST+=("$line")
+    done < <(lsblk -d -p -n -o NAME,SIZE,TYPE,MODEL | awk '$3 == "disk"')
+}
+
 list_disks() {
+    _collect_disks
     echo ""
     echo -e "${CYAN}Available disks:${NC}"
     echo ""
-    lsblk -d -p -n -o NAME,SIZE,TYPE,MODEL | awk '$3 == "disk"' | grep -vE "^/dev/(loop|sr|fd|ram)" | while read line; do
-        echo "  $line"
+    if [ "${#DISK_LIST[@]}" -eq 0 ]; then
+        echo -e "  ${RED}(no disks detected — bailing)${NC}"
+        return 1
+    fi
+    local i=1
+    for line in "${DISK_LIST[@]}"; do
+        printf "  ${WHITE}[%d]${NC} %s\n" "$i" "$line"
+        i=$((i + 1))
     done
     echo ""
 }
 
 select_disk() {
-    list_disks
+    list_disks || die "no disks detected — install cannot continue"
 
     echo -e "${YELLOW}WARNING: The selected disk will be COMPLETELY ERASED!${NC}"
     echo ""
 
     # If TARGET_DISK already set from config, use it
-    if [ -n "$TARGET_DISK" ] && [ -b "$TARGET_DISK" ]; then
+    if [ -n "${TARGET_DISK:-}" ] && [ -b "$TARGET_DISK" ]; then
         log_step "Using disk from config: $TARGET_DISK"
     else
-        read -p "Enter disk to install to (e.g., /dev/nvme0n1 or /dev/sda): " TARGET_DISK
+        local n_disks="${#DISK_LIST[@]}"
+        local picked=""
+        while [ -z "$picked" ]; do
+            read -p "Pick disk by number [1-${n_disks}] or full path (e.g. /dev/sda): " choice
+            # Numeric path
+            if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                if [ "$choice" -ge 1 ] && [ "$choice" -le "$n_disks" ]; then
+                    # Extract NAME from "NAME SIZE TYPE MODEL" line
+                    picked=$(awk '{print $1}' <<<"${DISK_LIST[$((choice - 1))]}")
+                else
+                    log_warning "out of range — pick 1 to ${n_disks}"
+                fi
+            # Full path
+            elif [ -b "$choice" ]; then
+                picked="$choice"
+            else
+                log_warning "not a valid number or block device: $choice"
+            fi
+        done
+        TARGET_DISK="$picked"
     fi
 
     # Validate disk exists
@@ -643,11 +736,30 @@ prepare_clean_state() {
     # leak the new install's data into the ISO's tmpfs.
     log_step "Preparing clean state (recovering from any prior install attempt)..."
 
+    # Step out of /mnt if we somehow ended up there — protects us from the
+    # fuser sweep below (otherwise we'd kill ourselves).
+    cd / 2>/dev/null || true
+
     # 1. Kill any process holding files in /mnt — usually leftover bash from
-    #    a half-run chroot that was Ctrl-C'd.
-    if command -v fuser &>/dev/null; then
-        fuser -km /mnt 2>/dev/null || true
-        sleep 1
+    #    a half-run chroot that was Ctrl-C'd. Critically, exclude this script
+    #    AND its parent shell from the kill list. fuser -km is otherwise
+    #    indiscriminate: on re-runs it'll happily SIGKILL the live install.sh
+    #    if anything in the process tree has fds open under /mnt, with no
+    #    error message — the user just sees a black flash and lands back at
+    #    the live ISO shell. That's the failure mode this guard prevents.
+    if command -v fuser &>/dev/null && mountpoint -q /mnt 2>/dev/null; then
+        local me=$$ parent=$PPID
+        local victims
+        # fuser -m prints PIDs space-separated on stderr; flatten and filter.
+        victims="$(fuser -m /mnt 2>&1 | tr -cd '0-9 \n' | tr ' \n' '\n\n' \
+            | awk -v me="$me" -v p="$parent" 'NF && $1!=me && $1!=p' \
+            | sort -u)"
+        if [ -n "$victims" ]; then
+            log_step "Killing leftover /mnt processes: $(echo $victims | tr '\n' ' ')"
+            # shellcheck disable=SC2086
+            kill -9 $victims 2>/dev/null || true
+            sleep 1
+        fi
     fi
 
     # 2. Recursively unmount /mnt. -R handles nested mounts (boot/efi, etc.),
@@ -772,18 +884,27 @@ partition_disk() {
 install_base_system() {
     log_step "Installing base system (this may take a while)..."
 
-    # Tune the LIVE ISO's pacman.conf for parallel downloads + aria2 retries.
-    # This speeds up pacstrap and gives us aria2's resilient retry behaviour
-    # for free on the very first download cycle.
-    log_step "Tuning live-ISO pacman.conf for parallel/aria2 downloads..."
+    # Tune the LIVE ISO's pacman.conf for parallel downloads.
+    #
+    # We DO NOT install an aria2c XferCommand here — even though aria2 supports
+    # 8 connections per file, pacman ignores ParallelDownloads when XferCommand
+    # is set and falls back to fetching one package at a time. So aria2c gives
+    # up parallel-across-files for parallel-within-one-file, which is usually
+    # slower and (more importantly) silent on a stalled mirror: aria2c -q
+    # produces no output for minutes while pacman shows only "retrieving
+    # packages..." with no progress. Native ParallelDownloads + libcurl shows
+    # a live progress line per file and cancels stalled connections quickly.
+    log_step "Tuning live-ISO pacman.conf (ParallelDownloads = 8)..."
     if ! grep -q '^ParallelDownloads' /etc/pacman.conf; then
         sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 8/' /etc/pacman.conf
         grep -q '^ParallelDownloads' /etc/pacman.conf || \
             echo 'ParallelDownloads = 8' >> /etc/pacman.conf
     fi
-    # aria2 may not be installed on the ISO itself; only set XferCommand if present.
-    if command -v aria2c &>/dev/null && ! grep -q '^XferCommand' /etc/pacman.conf; then
-        sed -i '/^\[options\]/a XferCommand = /usr/bin/aria2c --allow-overwrite=true --continue=true --file-allocation=none --log-level=error --max-tries=4 --max-connection-per-server=8 --max-file-not-found=4 --min-split-size=5M --no-conf --remote-time=true --summary-interval=60 --timeout=10 --retry-wait=1 --console-log-level=error --download-result=hide --quiet -d / -o %o %u' /etc/pacman.conf
+    # If a previous run installed an aria2c XferCommand, strip it — leaving
+    # it active would silence pacstrap from this point forward.
+    if grep -q '^XferCommand.*aria2c' /etc/pacman.conf; then
+        log_step "Removing legacy aria2c XferCommand from /etc/pacman.conf"
+        sed -i '/^XferCommand.*aria2c/d' /etc/pacman.conf
     fi
     log_success "Pacman tuned"
 
@@ -865,14 +986,18 @@ MIRRORS
     # `pacman -Syu` (run inside chroot during config) from yanking `linux` out
     # from under a running ISO that has older kernel headers — the exact failure
     # path that bricks NVIDIA/DKMS installs mid-flight.
-    log_step "Tuning target pacman.conf (parallel + aria2 + kernel pin)..."
+    log_step "Tuning target pacman.conf (parallel + kernel pin)..."
     if ! grep -q '^ParallelDownloads' /mnt/etc/pacman.conf; then
         sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 8/' /mnt/etc/pacman.conf
         grep -q '^ParallelDownloads' /mnt/etc/pacman.conf || \
             echo 'ParallelDownloads = 8' >> /mnt/etc/pacman.conf
     fi
-    if ! grep -q '^XferCommand' /mnt/etc/pacman.conf; then
-        sed -i '/^\[options\]/a XferCommand = /usr/bin/aria2c --allow-overwrite=true --continue=true --file-allocation=none --log-level=error --max-tries=4 --max-connection-per-server=8 --max-file-not-found=4 --min-split-size=5M --no-conf --remote-time=true --summary-interval=60 --timeout=10 --retry-wait=1 --console-log-level=error --download-result=hide --quiet -d / -o %o %u' /mnt/etc/pacman.conf
+    # Same rationale as the live-ISO tuning: do NOT install an aria2c
+    # XferCommand. It silences pacman's per-file progress and forces serial
+    # downloads (XferCommand suppresses ParallelDownloads). Strip any legacy
+    # one a previous run left behind.
+    if grep -q '^XferCommand.*aria2c' /mnt/etc/pacman.conf; then
+        sed -i '/^XferCommand.*aria2c/d' /mnt/etc/pacman.conf
     fi
     if ! grep -q '^IgnorePkg.*linux' /mnt/etc/pacman.conf; then
         sed -i '/^\[options\]/a IgnorePkg   = linux linux-headers linux-firmware linux-lts linux-lts-headers' /mnt/etc/pacman.conf
@@ -1060,55 +1185,138 @@ DESKTOP_EOF
 install_jesternet_theme() {
     log_step "Installing JesterNet DarkGlass theme..."
 
-    # Copy theme files to new system
+    # ── Locate theme assets correctly regardless of how the script was run ──
+    # The repo can be invoked three ways:
+    #   1. `bash install.sh`  from repo root          → script IS at repo root
+    #   2. `bash arch-install/jesternet-arch-install.sh`  → script is one level deep
+    #   3. `curl ... | bash`  → script lives in a tmp dir with NO assets
+    #
+    # The OLD code did `THEME_DIR=$(dirname $SCRIPT_DIR)`, assuming case 2 only.
+    # Case 1 produced THEME_DIR=$HOME (e.g. /root) and `cp -r /root/*` hung
+    # for ages copying random live-ISO files, then walked into /mnt itself.
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    THEME_DIR="$(dirname "$SCRIPT_DIR")"
 
-    # Copy entire theme package
-    mkdir -p /mnt/home/${USERNAME}/JesterNet
-    cp -r "$THEME_DIR"/* /mnt/home/${USERNAME}/JesterNet/ 2>/dev/null || {
-        log_warning "Theme files not found locally, will need manual installation"
-        return
+    # Find the directory that ACTUALLY contains the assets. Probe in order:
+    # the script's own dir, then its parent, then parent's parent.
+    THEME_DIR=""
+    for candidate in "$SCRIPT_DIR" "$(dirname "$SCRIPT_DIR")" "$(dirname "$(dirname "$SCRIPT_DIR")")"; do
+        if [ -d "$candidate/extensions" ] || [ -d "$candidate/icons" ] || [ -d "$candidate/gnome-shell" ]; then
+            THEME_DIR="$candidate"
+            break
+        fi
+    done
+
+    # If we still couldn't find them, clone fresh from GitHub (curl-piped case).
+    if [ -z "$THEME_DIR" ]; then
+        log_warning "Theme assets not found near script — fetching from GitHub"
+        local clone_target="/tmp/jesternet-assets"
+        rm -rf "$clone_target" 2>/dev/null
+        if timeout 180 git clone --depth=1 \
+                https://github.com/quantum-encoding/jesternet-os.git \
+                "$clone_target"
+        then
+            THEME_DIR="$clone_target"
+            log_success "Theme assets cloned to $THEME_DIR"
+        else
+            log_error "Could not clone theme assets — skipping theme install"
+            FAILED_STEPS+=("JesterNet theme assets fetch")
+            return 1
+        fi
+    fi
+
+    log_step "Theme assets located at: $THEME_DIR"
+
+    # Final sanity guard against catastrophic THEME_DIR values.
+    case "$THEME_DIR" in
+        /|/root|/home|/tmp|/mnt|/mnt/*)
+            log_error "Refusing to copy from unsafe dir: $THEME_DIR"
+            FAILED_STEPS+=("JesterNet theme — unsafe asset dir")
+            return 1
+            ;;
+    esac
+
+    # ── safe_cp: cp wrapped with a hard timeout so a single slow read on
+    # Ventoy USB cannot wedge the whole install. Reports per-step.
+    safe_cp() {
+        local src="$1" dst="$2" label="$3" tmo="${4:-180}"
+        if [ ! -e "$src" ]; then
+            log_step "  (skip) $label — source not present"
+            return 0
+        fi
+        log_step "  copying $label …"
+        if timeout "$tmo" cp -r "$src" "$dst" 2>/dev/null; then
+            log_success "  $label copied"
+            return 0
+        fi
+        log_error "  $label copy timed out or failed (continuing)"
+        FAILED_STEPS+=("theme: $label")
+        return 1
     }
 
-    # Install DarkGlass icon theme system-wide
+    # Copy entire theme package into ~/JesterNet (used by setup-theme.sh on
+    # first boot). Use cp -r DIR/. to copy contents without recursing into
+    # parent links, with a generous timeout for big extensions trees.
+    mkdir -p "/mnt/home/${USERNAME}/JesterNet"
+    log_step "Copying theme package (may take 30-90s on Ventoy USB) …"
+    if timeout 300 cp -r "$THEME_DIR"/. "/mnt/home/${USERNAME}/JesterNet/" 2>/dev/null; then
+        log_success "Theme package copied"
+    else
+        log_warning "Theme package copy timed out — partial install"
+        FAILED_STEPS+=("theme: package copy")
+    fi
+
+    # System-wide DarkGlass icons
     if [ -d "$THEME_DIR/icons/DarkGlass" ]; then
         mkdir -p /mnt/usr/share/icons
-        cp -r "$THEME_DIR/icons/DarkGlass" /mnt/usr/share/icons/
-        log_success "DarkGlass icons installed"
+        safe_cp "$THEME_DIR/icons/DarkGlass" "/mnt/usr/share/icons/" "DarkGlass icons"
     fi
 
-    # Install GTK theme if present
+    # GTK themes
     if [ -d "$THEME_DIR/gtk" ]; then
         mkdir -p /mnt/usr/share/themes
-        cp -r "$THEME_DIR/gtk"/* /mnt/usr/share/themes/ 2>/dev/null || true
+        log_step "  copying GTK themes …"
+        timeout 120 cp -r "$THEME_DIR/gtk"/. /mnt/usr/share/themes/ 2>/dev/null \
+            && log_success "  GTK themes copied" \
+            || log_warning "  GTK theme copy partial/failed (continuing)"
     fi
 
-    # Install GNOME Shell theme if present
+    # GNOME Shell theme
     if [ -d "$THEME_DIR/gnome-shell" ]; then
         mkdir -p /mnt/usr/share/gnome-shell/theme
-        cp -r "$THEME_DIR/gnome-shell"/* /mnt/usr/share/gnome-shell/theme/ 2>/dev/null || true
+        log_step "  copying GNOME Shell theme …"
+        timeout 120 cp -r "$THEME_DIR/gnome-shell"/. /mnt/usr/share/gnome-shell/theme/ 2>/dev/null \
+            && log_success "  Shell theme copied" \
+            || log_warning "  Shell theme copy partial/failed (continuing)"
     fi
 
-    # Set up default wallpaper
+    # Default wallpaper
     if [ -f "$THEME_DIR/config/wallpaper.jpg" ]; then
-        mkdir -p /mnt/home/${USERNAME}/.config
-        cp "$THEME_DIR/config/wallpaper.jpg" /mnt/home/${USERNAME}/.config/background
-        log_success "Wallpaper installed"
+        mkdir -p "/mnt/home/${USERNAME}/.config"
+        cp "$THEME_DIR/config/wallpaper.jpg" "/mnt/home/${USERNAME}/.config/background" 2>/dev/null \
+            && log_success "Wallpaper installed" \
+            || log_warning "Wallpaper copy failed (non-fatal)"
     fi
 
-    # Install GNOME extensions (user-level)
-    mkdir -p /mnt/home/${USERNAME}/.local/share/gnome-shell/extensions
-
-    # Copy all bundled extensions
+    # GNOME extensions — biggest dir, most likely to be slow on Ventoy
+    mkdir -p "/mnt/home/${USERNAME}/.local/share/gnome-shell/extensions"
     if [ -d "$THEME_DIR/extensions" ]; then
-        cp -r "$THEME_DIR/extensions"/* /mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/
-        log_success "GNOME extensions installed"
+        log_step "  copying GNOME extensions (largest step — be patient) …"
+        if timeout 300 cp -r "$THEME_DIR/extensions"/. \
+                "/mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/" 2>/dev/null
+        then
+            log_success "  GNOME extensions copied"
+        else
+            log_warning "  extensions copy timed out — continuing"
+            FAILED_STEPS+=("theme: GNOME extensions")
+        fi
     fi
 
-    # Also copy darkglass-themer if in root (legacy location)
+    # Legacy darkglass-themer extension (if in root)
     if [ -d "$THEME_DIR/darkglass-themer@jesternet.com" ]; then
-        cp -r "$THEME_DIR/darkglass-themer@jesternet.com" /mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/
+        log_step "  copying darkglass-themer extension …"
+        timeout 60 cp -r "$THEME_DIR/darkglass-themer@jesternet.com" \
+            "/mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/" 2>/dev/null \
+            || log_warning "  darkglass-themer copy failed (continuing)"
     fi
 
     # Create first-login setup script
@@ -1358,6 +1566,17 @@ cd yay || exit 1
 if makepkg -si --noconfirm; then
     cd .. && rm -rf yay
     echo "✓ yay installed successfully!"
+
+    # Once yay is in, pull the AUR-only terminal: Warp.
+    # Non-fatal — user can retry later with: yay -S warp-terminal-bin
+    echo ""
+    echo "Installing Warp terminal from AUR..."
+    if yay -S --noconfirm --needed warp-terminal-bin; then
+        echo "✓ Warp terminal installed."
+    else
+        echo "⚠ Warp install failed. Retry manually with: yay -S warp-terminal-bin"
+    fi
+
     exit 0
 else
     cd ..
@@ -1374,6 +1593,426 @@ YAY_USER_EOF
 }
 
 # ============================================================================
+# Terminal Stack
+# ----------------------------------------------------------------------------
+# Installs a curated terminal environment: zsh + plugins, tmux, two GPU
+# terminals (WezTerm, Ghostty), and JetBrains Mono. Warp is queued for the
+# post-boot install-yay.sh step because it's AUR-only.
+# ============================================================================
+
+install_terminal_stack() {
+    log_step "Installing terminal stack (zsh, tmux, WezTerm, Ghostty)..."
+
+    # Official-repo packages — Warp is AUR and handled in install-yay.sh tail.
+    # Three groups, ordered by purpose for review at a glance:
+    #   shells/multiplexer/terminals/fonts → modern CLI replacements → wow utils
+    if ! arch-chroot /mnt pacman -S --needed --noconfirm \
+            zsh tmux \
+            wezterm ghostty \
+            zsh-fast-syntax-highlighting zsh-autosuggestions zsh-completions \
+            ttf-jetbrains-mono ttf-jetbrains-mono-nerd ttf-fira-code \
+            starship fzf eza bat fd ripgrep zoxide git-delta \
+            btop duf dust tealdeer fastfetch onefetch; then
+        log_warning "Some terminal packages failed to install — continuing"
+    fi
+
+    # Make zsh the user's login shell. chsh failure is non-fatal — user can
+    # rerun the command themselves. We use absolute path because /etc/shells
+    # may not yet be fully populated for fresh root chroots.
+    if ! arch-chroot /mnt chsh -s /usr/bin/zsh "${USERNAME}" 2>/dev/null; then
+        log_warning "chsh failed — user can run: chsh -s /usr/bin/zsh"
+    fi
+
+    mkdir -p "/mnt/home/${USERNAME}/.config/wezterm"
+    mkdir -p "/mnt/home/${USERNAME}/.config/ghostty"
+
+    # ------------------------------------------------------------------
+    # ~/.zshrc
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.zshrc" << 'ZSHRC_EOF'
+# JesterNet OS — zsh starter config
+# Pulls together the modern shell stack: starship prompt, fzf fuzzy
+# finder, zoxide smart-cd, eza/bat/fd/ripgrep, plus zsh autosuggestions
+# and fast-syntax-highlighting. Extend freely.
+
+# ---- History --------------------------------------------------------------
+HISTFILE=~/.histfile
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE INC_APPEND_HISTORY EXTENDED_HISTORY
+
+# ---- Word boundaries ------------------------------------------------------
+# Stop treating / and . as word characters so Alt-B / Alt-F jump path segments.
+WORDCHARS=${WORDCHARS//[\/\.]}
+
+# ---- Completion -----------------------------------------------------------
+if [[ -d /usr/share/zsh/site-functions ]]; then
+    fpath=(/usr/share/zsh/site-functions $fpath)
+fi
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+
+# ---- Plugins (load order matters) -----------------------------------------
+# zsh-autosuggestions: ghostly inline preview from history.
+[[ -r /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && \
+    source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#6272a4'
+
+# fzf: Ctrl-R fuzzy history, Ctrl-T fuzzy file picker, Alt-C fuzzy cd.
+[[ -r /usr/share/fzf/key-bindings.zsh ]] && source /usr/share/fzf/key-bindings.zsh
+[[ -r /usr/share/fzf/completion.zsh   ]] && source /usr/share/fzf/completion.zsh
+
+# zoxide: `z foo` to jump to any dir you've visited; `zi foo` for interactive picker.
+command -v zoxide >/dev/null && eval "$(zoxide init zsh)"
+
+# fast-syntax-highlighting: MUST come after other plugins that bind keymaps,
+# otherwise its hooks miss those bindings.
+[[ -r /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh ]] && \
+    source /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
+
+# ---- Modern CLI replacements ---------------------------------------------
+if command -v eza >/dev/null; then
+    alias ls='eza --icons --group-directories-first'
+    alias ll='eza -lah --icons --git --group-directories-first'
+    alias la='eza -a --icons'
+    alias tree='eza --tree --icons --git-ignore'
+fi
+command -v bat  >/dev/null && export BAT_THEME='Dracula'
+command -v duf  >/dev/null && alias df='duf'
+command -v dust >/dev/null && alias du='dust'
+
+# ---- fzf: JesterNet palette + fd as default file source ------------------
+if command -v fd >/dev/null; then
+    export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+    export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+    export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+fi
+export FZF_DEFAULT_OPTS="
+  --height=40% --layout=reverse --border=rounded
+  --color=bg+:#1a1a25,bg:#0a0a0f,spinner:#00ffff,hl:#ff00ff
+  --color=fg:#f8f8f2,header:#ff00ff,info:#00ffff,pointer:#00ffff
+  --color=marker:#00ffff,fg+:#f8f8f2,prompt:#ff00ff,hl+:#ff00ff"
+
+# ---- Other aliases --------------------------------------------------------
+alias grep='grep --color=auto'
+alias diff='diff --color=auto'
+alias rg='rg --smart-case'
+
+# ---- Starship prompt — must run last (it sets PROMPT/RPROMPT) -----------
+command -v starship >/dev/null && eval "$(starship init zsh)"
+
+# Uncomment for vi-mode:
+# bindkey -v
+ZSHRC_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.tmux.conf
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.tmux.conf" << 'TMUX_EOF'
+# JesterNet OS — tmux starter config
+
+# Prefix: Ctrl-Space (avoids the C-b that breaks vim, and the C-a that breaks readline).
+unbind C-b
+set -g prefix C-Space
+bind C-Space send-prefix
+
+# Mouse + true color
+set -g mouse on
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",xterm-256color:RGB,*:RGB"
+
+# Generous scrollback and snappy escape.
+set -g history-limit 50000
+set -sg escape-time 10
+
+# vi-mode for copy mode.
+setw -g mode-keys vi
+
+# 1-indexed windows/panes; renumber on close.
+set -g base-index 1
+setw -g pane-base-index 1
+set -g renumber-windows on
+
+# Reload config in place.
+bind r source-file ~/.tmux.conf \; display "Reloaded ~/.tmux.conf"
+
+# Splits open in the current pane's working directory.
+bind | split-window -h -c "#{pane_current_path}"
+bind - split-window -v -c "#{pane_current_path}"
+
+# JesterNet cyan/magenta status bar.
+set -g status-bg "#0a0a0f"
+set -g status-fg "#bfbfbf"
+set -g status-left-length 30
+set -g status-left  "#[fg=#00ffff,bold] #S #[fg=#ff00ff]│ "
+set -g status-right "#[fg=#ff00ff]│ #[fg=#00ffff]%H:%M #[fg=#ff00ff]│ #[fg=#00ffff]%d-%b "
+setw -g window-status-current-style "fg=#00ffff,bold"
+setw -g window-status-style         "fg=#6272a4"
+set -g pane-active-border-style     "fg=#00ffff"
+set -g pane-border-style            "fg=#1a1a25"
+TMUX_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.config/wezterm/wezterm.lua  — JesterNet theme + transparency
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.config/wezterm/wezterm.lua" << 'WEZTERM_EOF'
+-- JesterNet OS — WezTerm config
+-- Cyan/magenta cyberpunk palette, glassmorphic transparency, JetBrains Mono.
+
+local wezterm = require 'wezterm'
+local config = wezterm.config_builder()
+
+-- ---- Palette --------------------------------------------------------------
+config.colors = {
+  foreground     = '#f8f8f2',
+  background     = '#0a0a0f',
+  cursor_bg      = '#00ffff',
+  cursor_fg      = '#0a0a0f',
+  cursor_border  = '#00ffff',
+  selection_bg   = '#ff00ff',
+  selection_fg   = '#0a0a0f',
+  ansi = {
+    '#14141e', '#ff5577', '#50fa7b', '#f1fa8c',
+    '#6272a4', '#ff00ff', '#00ffff', '#bfbfbf',
+  },
+  brights = {
+    '#44475a', '#ff7799', '#69ff94', '#ffffa5',
+    '#7e8eb6', '#ff77ff', '#77ffff', '#ffffff',
+  },
+  tab_bar = {
+    background   = '#0a0a0f',
+    active_tab   = { bg_color = '#1a1a25', fg_color = '#00ffff' },
+    inactive_tab = { bg_color = '#0a0a0f', fg_color = '#6272a4' },
+  },
+}
+
+-- ---- Font -----------------------------------------------------------------
+-- Nerd Font first so starship icons + eza icons render correctly. Falls back
+-- to plain JetBrains Mono / Fira Code if the nerd-font package isn't present.
+config.font = wezterm.font_with_fallback {
+  'JetBrainsMono Nerd Font',
+  'JetBrains Mono',
+  'Fira Code',
+  'monospace',
+}
+config.font_size = 11.0
+config.line_height = 1.05
+
+-- ---- Window ---------------------------------------------------------------
+config.window_background_opacity = 0.85
+config.window_padding = { left = 12, right = 12, top = 8, bottom = 8 }
+config.window_decorations = 'RESIZE'
+config.use_fancy_tab_bar = true
+config.hide_tab_bar_if_only_one_tab = true
+
+-- ---- Cursor / behavior ----------------------------------------------------
+config.default_cursor_style = 'BlinkingBlock'
+config.cursor_blink_rate    = 600
+config.scrollback_lines     = 50000
+config.audible_bell         = 'Disabled'
+
+return config
+WEZTERM_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.config/ghostty/config — same palette, ghostty syntax
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.config/ghostty/config" << 'GHOSTTY_EOF'
+# JesterNet OS — Ghostty config
+
+background = #0a0a0f
+foreground = #f8f8f2
+background-opacity = 0.85
+background-blur-radius = 20
+
+cursor-color = #00ffff
+cursor-style = block
+cursor-style-blink = true
+
+selection-background = #ff00ff
+selection-foreground = #0a0a0f
+
+# 16-color ANSI — JesterNet cyan/magenta accents
+palette = 0=#14141e
+palette = 1=#ff5577
+palette = 2=#50fa7b
+palette = 3=#f1fa8c
+palette = 4=#6272a4
+palette = 5=#ff00ff
+palette = 6=#00ffff
+palette = 7=#bfbfbf
+palette = 8=#44475a
+palette = 9=#ff7799
+palette = 10=#69ff94
+palette = 11=#ffffa5
+palette = 12=#7e8eb6
+palette = 13=#ff77ff
+palette = 14=#77ffff
+palette = 15=#ffffff
+
+font-family = JetBrainsMono Nerd Font
+font-size = 11
+
+window-padding-x = 12
+window-padding-y = 8
+GHOSTTY_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.config/starship.toml — JesterNet-themed prompt
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.config/starship.toml" << 'STARSHIP_EOF'
+# JesterNet OS — starship prompt
+# Cyan/magenta cyberpunk; Nerd Font glyphs throughout (icons render
+# only if the terminal is using the nerd-font variant of JetBrains Mono).
+
+format = """
+[╭─](bold magenta)$username$hostname$directory$git_branch$git_status$rust$python$nodejs$golang$cmd_duration
+[╰─](bold magenta)$character"""
+
+add_newline = false
+
+[character]
+success_symbol = "[❯](bold cyan)"
+error_symbol   = "[❯](bold red)"
+vimcmd_symbol  = "[❮](bold green)"
+
+[username]
+style_user = "bold cyan"
+style_root = "bold red"
+format     = "[$user]($style)"
+show_always = false
+
+[hostname]
+ssh_only = false
+style    = "bold cyan"
+format   = "[@$hostname]($style) "
+
+[directory]
+style              = "bold cyan"
+format             = "[$path]($style) "
+truncation_length  = 5
+truncate_to_repo   = true
+read_only          = " "
+
+[git_branch]
+symbol = " "
+style  = "bold magenta"
+format = "[$symbol$branch]($style) "
+
+[git_status]
+style  = "bold magenta"
+format = "[$all_status$ahead_behind]($style) "
+ahead     = "⇡${count}"
+behind    = "⇣${count}"
+diverged  = "⇕⇡${ahead_count}⇣${behind_count}"
+conflicted = "="
+untracked  = "?${count}"
+modified   = "!${count}"
+staged     = "+${count}"
+renamed    = "»${count}"
+deleted    = "✘${count}"
+stashed    = "$"
+
+[cmd_duration]
+min_time = 2000
+style    = "bold yellow"
+format   = "[took $duration]($style) "
+
+[rust]
+symbol = " "
+style  = "bold #ff5577"
+format = "[$symbol$version]($style) "
+
+[python]
+symbol = " "
+style  = "bold yellow"
+format = "[$symbol$version]($style) "
+
+[nodejs]
+symbol = " "
+style  = "bold green"
+format = "[$symbol$version]($style) "
+
+[golang]
+symbol = " "
+style  = "bold cyan"
+format = "[$symbol$version]($style) "
+
+[package]
+disabled = true
+STARSHIP_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.zlogin — runs once per login shell. fastfetch shows a quick
+    # ASCII splash with system info — this is the "wow" first-boot moment
+    # for users coming from Windows. Skipped silently in nested shells.
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.zlogin" << 'ZLOGIN_EOF'
+# Run only on real interactive login shells (not on every nested zsh).
+if [[ -o login && -t 1 ]] && command -v fastfetch >/dev/null; then
+    fastfetch
+fi
+ZLOGIN_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.gitconfig — only seeded if the user doesn't already have one.
+    # Sets up git-delta for pretty side-by-side diffs and useful colors.
+    # User identity (name/email) is intentionally NOT set; the user runs
+    # `git config --global user.name/email` themselves.
+    # ------------------------------------------------------------------
+    if [[ ! -f "/mnt/home/${USERNAME}/.gitconfig" ]]; then
+        cat > "/mnt/home/${USERNAME}/.gitconfig" << 'GITCONFIG_EOF'
+# JesterNet OS — git starter config
+# Set your identity:
+#   git config --global user.name  "Your Name"
+#   git config --global user.email "you@example.com"
+
+[core]
+    pager = delta
+
+[interactive]
+    diffFilter = delta --color-only
+
+[delta]
+    features = side-by-side line-numbers decorations
+    syntax-theme = Dracula
+    navigate = true
+
+[delta "decorations"]
+    commit-decoration-style = bold magenta box ul
+    file-style = bold cyan ul
+    file-decoration-style = none
+    hunk-header-decoration-style = cyan box
+
+[merge]
+    conflictstyle = diff3
+
+[diff]
+    colorMoved = default
+
+[init]
+    defaultBranch = main
+
+[pull]
+    rebase = false
+GITCONFIG_EOF
+    fi
+
+    # Single chown sweep — covers the four direct-home files plus the .config
+    # subdirs we created. Recursive on .config is safe here because GNOME
+    # hasn't run yet, so nothing else owns subdirs there.
+    arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" \
+        "/home/${USERNAME}/.zshrc" \
+        "/home/${USERNAME}/.zlogin" \
+        "/home/${USERNAME}/.tmux.conf" \
+        "/home/${USERNAME}/.gitconfig" \
+        "/home/${USERNAME}/.config" 2>/dev/null || true
+
+    log_success "Terminal stack installed (Warp queued for post-boot AUR install)"
+}
+
+# ============================================================================
 # Final Cleanup
 # ============================================================================
 
@@ -1383,6 +2022,16 @@ cleanup() {
     # Remove temporary scripts
     rm -f /mnt/root/chroot-setup.sh
     rm -f /mnt/root/install-desktop.sh
+
+    # Install the system baseline tool to the user's home so it's available
+    # alongside the other first-login scripts (./install-yay.sh, etc.).
+    local CLEANUP_SCRIPT_DIR
+    CLEANUP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" ]; then
+        cp "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" /mnt/home/${USERNAME}/linux-baseline.sh
+        chmod +x /mnt/home/${USERNAME}/linux-baseline.sh
+        arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/linux-baseline.sh
+    fi
 
     # Create first-boot instruction file
     cat > /mnt/home/${USERNAME}/FIRST_BOOT_README.txt << README_EOF
@@ -1394,8 +2043,27 @@ Congratulations! Your JesterNet OS installation is complete.
 
 After logging in, run these commands to complete your setup:
 
-1. Install yay (AUR helper):
+Pre-installed terminal stack (already in /usr/bin):
+   Shell:       zsh (default)  ·  tmux  ·  starship prompt
+   Terminals:   WezTerm  ·  Ghostty   (Warp installs in step 1 below)
+   Modern CLI:  eza · bat · fd · ripgrep · zoxide · fzf · git-delta
+   Wow utils:   btop · duf · dust · fastfetch · onefetch · tealdeer
+
+   Try right now:
+     fastfetch                # ASCII splash + system info (auto-runs on login)
+     btop                     # system monitor
+     z <dirname>              # smart-cd via zoxide
+     Ctrl-R                   # fzf fuzzy history search
+     ll                       # eza with icons + git status
+     bat <file>               # syntax-highlighted cat
+     onefetch                 # repo info, run inside any git repo
+
+   Configs:    ~/.zshrc · ~/.tmux.conf · ~/.gitconfig
+               ~/.config/{wezterm,ghostty,starship.toml}
+
+1. Install yay + Warp terminal (AUR):
    ./install-yay.sh
+   (yay first, then warp-terminal-bin from AUR)
 
 2. Apply the JesterNet theme:
    ./setup-theme.sh
@@ -1403,7 +2071,12 @@ After logging in, run these commands to complete your setup:
 3. Install development stacks (optional):
    ./install-dev-stacks.sh
 
-4. Reboot to apply all changes:
+4. Capture a system baseline (optional, ~90s):
+   ./linux-baseline.sh
+   Writes baseline-<host>-<UTC>.txt for diffing against future runs
+   (kernel upgrades, governor changes, etc.). See README for details.
+
+5. Reboot to apply all changes:
    reboot
 
 Enjoy your new system!
@@ -1506,6 +2179,7 @@ main() {
     try_func "Install JesterNet theme"   install_jesternet_theme
     try_func "Install dev stacks"        install_dev_stacks
     try_func "Apply enterprise config"   configure_enterprise
+    try_func "Install terminal stack"    install_terminal_stack
     try_func "Install AUR helper (yay)"  install_aur_helper
 
     cleanup
@@ -1517,8 +2191,9 @@ main() {
 # Entry Point
 # ============================================================================
 
-# Check for config file argument
-if [ -n "$1" ] && [ -f "$1" ]; then
+# Check for optional config file argument. Use ${1:-} so set -u doesn't trip
+# when the script is invoked without any arguments (the common case).
+if [ -n "${1:-}" ] && [ -f "$1" ]; then
     CONFIG_FILE="$1"
     log_step "Loading configuration from $CONFIG_FILE"
     source "$CONFIG_FILE"

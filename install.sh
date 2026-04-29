@@ -439,27 +439,67 @@ preflight_checks() {
 # Disk Selection
 # ============================================================================
 
+# Populate DISK_LIST as a global array, used by both list_disks and select_disk.
+_collect_disks() {
+    DISK_LIST=()
+    while IFS= read -r line; do
+        # Skip removable loop/optical/floppy/ram devices
+        local name
+        name=$(awk '{print $1}' <<<"$line")
+        case "$name" in
+            /dev/loop*|/dev/sr*|/dev/fd*|/dev/ram*) continue ;;
+        esac
+        DISK_LIST+=("$line")
+    done < <(lsblk -d -p -n -o NAME,SIZE,TYPE,MODEL | awk '$3 == "disk"')
+}
+
 list_disks() {
+    _collect_disks
     echo ""
     echo -e "${CYAN}Available disks:${NC}"
     echo ""
-    lsblk -d -p -n -o NAME,SIZE,TYPE,MODEL | awk '$3 == "disk"' | grep -vE "^/dev/(loop|sr|fd|ram)" | while read line; do
-        echo "  $line"
+    if [ "${#DISK_LIST[@]}" -eq 0 ]; then
+        echo -e "  ${RED}(no disks detected — bailing)${NC}"
+        return 1
+    fi
+    local i=1
+    for line in "${DISK_LIST[@]}"; do
+        printf "  ${WHITE}[%d]${NC} %s\n" "$i" "$line"
+        i=$((i + 1))
     done
     echo ""
 }
 
 select_disk() {
-    list_disks
+    list_disks || die "no disks detected — install cannot continue"
 
     echo -e "${YELLOW}WARNING: The selected disk will be COMPLETELY ERASED!${NC}"
     echo ""
 
     # If TARGET_DISK already set from config, use it
-    if [ -n "$TARGET_DISK" ] && [ -b "$TARGET_DISK" ]; then
+    if [ -n "${TARGET_DISK:-}" ] && [ -b "$TARGET_DISK" ]; then
         log_step "Using disk from config: $TARGET_DISK"
     else
-        read -p "Enter disk to install to (e.g., /dev/nvme0n1 or /dev/sda): " TARGET_DISK
+        local n_disks="${#DISK_LIST[@]}"
+        local picked=""
+        while [ -z "$picked" ]; do
+            read -p "Pick disk by number [1-${n_disks}] or full path (e.g. /dev/sda): " choice
+            # Numeric path
+            if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                if [ "$choice" -ge 1 ] && [ "$choice" -le "$n_disks" ]; then
+                    # Extract NAME from "NAME SIZE TYPE MODEL" line
+                    picked=$(awk '{print $1}' <<<"${DISK_LIST[$((choice - 1))]}")
+                else
+                    log_warning "out of range — pick 1 to ${n_disks}"
+                fi
+            # Full path
+            elif [ -b "$choice" ]; then
+                picked="$choice"
+            else
+                log_warning "not a valid number or block device: $choice"
+            fi
+        done
+        TARGET_DISK="$picked"
     fi
 
     # Validate disk exists
@@ -1145,55 +1185,138 @@ DESKTOP_EOF
 install_jesternet_theme() {
     log_step "Installing JesterNet DarkGlass theme..."
 
-    # Copy theme files to new system
+    # ── Locate theme assets correctly regardless of how the script was run ──
+    # The repo can be invoked three ways:
+    #   1. `bash install.sh`  from repo root          → script IS at repo root
+    #   2. `bash arch-install/jesternet-arch-install.sh`  → script is one level deep
+    #   3. `curl ... | bash`  → script lives in a tmp dir with NO assets
+    #
+    # The OLD code did `THEME_DIR=$(dirname $SCRIPT_DIR)`, assuming case 2 only.
+    # Case 1 produced THEME_DIR=$HOME (e.g. /root) and `cp -r /root/*` hung
+    # for ages copying random live-ISO files, then walked into /mnt itself.
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    THEME_DIR="$(dirname "$SCRIPT_DIR")"
 
-    # Copy entire theme package
-    mkdir -p /mnt/home/${USERNAME}/JesterNet
-    cp -r "$THEME_DIR"/* /mnt/home/${USERNAME}/JesterNet/ 2>/dev/null || {
-        log_warning "Theme files not found locally, will need manual installation"
-        return
+    # Find the directory that ACTUALLY contains the assets. Probe in order:
+    # the script's own dir, then its parent, then parent's parent.
+    THEME_DIR=""
+    for candidate in "$SCRIPT_DIR" "$(dirname "$SCRIPT_DIR")" "$(dirname "$(dirname "$SCRIPT_DIR")")"; do
+        if [ -d "$candidate/extensions" ] || [ -d "$candidate/icons" ] || [ -d "$candidate/gnome-shell" ]; then
+            THEME_DIR="$candidate"
+            break
+        fi
+    done
+
+    # If we still couldn't find them, clone fresh from GitHub (curl-piped case).
+    if [ -z "$THEME_DIR" ]; then
+        log_warning "Theme assets not found near script — fetching from GitHub"
+        local clone_target="/tmp/jesternet-assets"
+        rm -rf "$clone_target" 2>/dev/null
+        if timeout 180 git clone --depth=1 \
+                https://github.com/quantum-encoding/jesternet-os.git \
+                "$clone_target"
+        then
+            THEME_DIR="$clone_target"
+            log_success "Theme assets cloned to $THEME_DIR"
+        else
+            log_error "Could not clone theme assets — skipping theme install"
+            FAILED_STEPS+=("JesterNet theme assets fetch")
+            return 1
+        fi
+    fi
+
+    log_step "Theme assets located at: $THEME_DIR"
+
+    # Final sanity guard against catastrophic THEME_DIR values.
+    case "$THEME_DIR" in
+        /|/root|/home|/tmp|/mnt|/mnt/*)
+            log_error "Refusing to copy from unsafe dir: $THEME_DIR"
+            FAILED_STEPS+=("JesterNet theme — unsafe asset dir")
+            return 1
+            ;;
+    esac
+
+    # ── safe_cp: cp wrapped with a hard timeout so a single slow read on
+    # Ventoy USB cannot wedge the whole install. Reports per-step.
+    safe_cp() {
+        local src="$1" dst="$2" label="$3" tmo="${4:-180}"
+        if [ ! -e "$src" ]; then
+            log_step "  (skip) $label — source not present"
+            return 0
+        fi
+        log_step "  copying $label …"
+        if timeout "$tmo" cp -r "$src" "$dst" 2>/dev/null; then
+            log_success "  $label copied"
+            return 0
+        fi
+        log_error "  $label copy timed out or failed (continuing)"
+        FAILED_STEPS+=("theme: $label")
+        return 1
     }
 
-    # Install DarkGlass icon theme system-wide
+    # Copy entire theme package into ~/JesterNet (used by setup-theme.sh on
+    # first boot). Use cp -r DIR/. to copy contents without recursing into
+    # parent links, with a generous timeout for big extensions trees.
+    mkdir -p "/mnt/home/${USERNAME}/JesterNet"
+    log_step "Copying theme package (may take 30-90s on Ventoy USB) …"
+    if timeout 300 cp -r "$THEME_DIR"/. "/mnt/home/${USERNAME}/JesterNet/" 2>/dev/null; then
+        log_success "Theme package copied"
+    else
+        log_warning "Theme package copy timed out — partial install"
+        FAILED_STEPS+=("theme: package copy")
+    fi
+
+    # System-wide DarkGlass icons
     if [ -d "$THEME_DIR/icons/DarkGlass" ]; then
         mkdir -p /mnt/usr/share/icons
-        cp -r "$THEME_DIR/icons/DarkGlass" /mnt/usr/share/icons/
-        log_success "DarkGlass icons installed"
+        safe_cp "$THEME_DIR/icons/DarkGlass" "/mnt/usr/share/icons/" "DarkGlass icons"
     fi
 
-    # Install GTK theme if present
+    # GTK themes
     if [ -d "$THEME_DIR/gtk" ]; then
         mkdir -p /mnt/usr/share/themes
-        cp -r "$THEME_DIR/gtk"/* /mnt/usr/share/themes/ 2>/dev/null || true
+        log_step "  copying GTK themes …"
+        timeout 120 cp -r "$THEME_DIR/gtk"/. /mnt/usr/share/themes/ 2>/dev/null \
+            && log_success "  GTK themes copied" \
+            || log_warning "  GTK theme copy partial/failed (continuing)"
     fi
 
-    # Install GNOME Shell theme if present
+    # GNOME Shell theme
     if [ -d "$THEME_DIR/gnome-shell" ]; then
         mkdir -p /mnt/usr/share/gnome-shell/theme
-        cp -r "$THEME_DIR/gnome-shell"/* /mnt/usr/share/gnome-shell/theme/ 2>/dev/null || true
+        log_step "  copying GNOME Shell theme …"
+        timeout 120 cp -r "$THEME_DIR/gnome-shell"/. /mnt/usr/share/gnome-shell/theme/ 2>/dev/null \
+            && log_success "  Shell theme copied" \
+            || log_warning "  Shell theme copy partial/failed (continuing)"
     fi
 
-    # Set up default wallpaper
+    # Default wallpaper
     if [ -f "$THEME_DIR/config/wallpaper.jpg" ]; then
-        mkdir -p /mnt/home/${USERNAME}/.config
-        cp "$THEME_DIR/config/wallpaper.jpg" /mnt/home/${USERNAME}/.config/background
-        log_success "Wallpaper installed"
+        mkdir -p "/mnt/home/${USERNAME}/.config"
+        cp "$THEME_DIR/config/wallpaper.jpg" "/mnt/home/${USERNAME}/.config/background" 2>/dev/null \
+            && log_success "Wallpaper installed" \
+            || log_warning "Wallpaper copy failed (non-fatal)"
     fi
 
-    # Install GNOME extensions (user-level)
-    mkdir -p /mnt/home/${USERNAME}/.local/share/gnome-shell/extensions
-
-    # Copy all bundled extensions
+    # GNOME extensions — biggest dir, most likely to be slow on Ventoy
+    mkdir -p "/mnt/home/${USERNAME}/.local/share/gnome-shell/extensions"
     if [ -d "$THEME_DIR/extensions" ]; then
-        cp -r "$THEME_DIR/extensions"/* /mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/
-        log_success "GNOME extensions installed"
+        log_step "  copying GNOME extensions (largest step — be patient) …"
+        if timeout 300 cp -r "$THEME_DIR/extensions"/. \
+                "/mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/" 2>/dev/null
+        then
+            log_success "  GNOME extensions copied"
+        else
+            log_warning "  extensions copy timed out — continuing"
+            FAILED_STEPS+=("theme: GNOME extensions")
+        fi
     fi
 
-    # Also copy darkglass-themer if in root (legacy location)
+    # Legacy darkglass-themer extension (if in root)
     if [ -d "$THEME_DIR/darkglass-themer@jesternet.com" ]; then
-        cp -r "$THEME_DIR/darkglass-themer@jesternet.com" /mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/
+        log_step "  copying darkglass-themer extension …"
+        timeout 60 cp -r "$THEME_DIR/darkglass-themer@jesternet.com" \
+            "/mnt/home/${USERNAME}/.local/share/gnome-shell/extensions/" 2>/dev/null \
+            || log_warning "  darkglass-themer copy failed (continuing)"
     fi
 
     # Create first-login setup script
