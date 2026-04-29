@@ -343,30 +343,90 @@ new-vue-app my-app            # Vue + Vite + Tailwind
 
 ## Terminal Stack
 
-JesterNet OS ships with a curated, high-quality terminal environment so you don't spend your first hour configuring shells. Multiple terminals are installed side-by-side because different tools suit different jobs — pick one per task or run them in parallel.
+JesterNet OS ships with a curated, high-quality terminal environment so you don't spend your first hour configuring shells. The goal is simple: a Windows or macOS user opens a terminal for the first time and goes *wow*. Multiple terminals are installed side-by-side because different tools suit different jobs — pick one per task or run them in parallel.
 
 ### What's installed
 
+#### Shells, terminals, multiplexer
+
 | Tool | Source | Role |
 |---|---|---|
-| **zsh** + plugins | `extra` | Default login shell, with fast-syntax-highlighting (`zsh-fast-syntax-highlighting`), inline autosuggestions (`zsh-autosuggestions`), and extended completions (`zsh-completions`) |
+| **zsh** + plugins | `extra` | Default login shell with fast-syntax-highlighting, inline autosuggestions, extended completions |
+| **starship** | `extra` | Modern prompt — git branch + status, language version, last-command duration, exit code, all themed cyan/magenta |
 | **WezTerm** | `extra/wezterm` | GPU-accelerated, Lua-configured terminal — pre-themed in JesterNet cyan/magenta with 85% transparency |
 | **Ghostty** | `extra/ghostty` | Mitchell Hashimoto's GPU terminal — same palette, same transparency, simpler config syntax |
 | **Warp** | AUR (`warp-terminal-bin`) | Modern AI-augmented terminal — installed automatically by `./install-yay.sh` once yay is set up |
 | **tmux** | `extra` | Terminal multiplexer with vi-mode copy, Ctrl-Space prefix, and a JesterNet-themed status bar |
-| **JetBrains Mono** + **Fira Code** | `extra` | Programming fonts referenced by the WezTerm and Ghostty configs |
+
+#### Modern CLI replacements
+
+The day-one experience feels fast and rich because the old Unix utilities are replaced with their modern counterparts. Everything below is in `/usr/bin` after install — no extra setup:
+
+| Tool | Replaces | Wow factor |
+|---|---|---|
+| **eza** | `ls` | Colored output, file-type icons, inline git status (`ll` is pre-aliased) |
+| **bat** | `cat` | Syntax highlighting + line numbers + git change markers |
+| **fd** | `find` | Faster, simpler syntax, respects `.gitignore` by default |
+| **ripgrep** (`rg`) | `grep -r` | Faster, smarter defaults, syntax-aware |
+| **fzf** | `Ctrl-R` history | Fuzzy interactive picker for history (`Ctrl-R`), files (`Ctrl-T`), dirs (`Alt-C`) |
+| **zoxide** (`z`) | `cd` | `z foo` jumps to any dir you've visited — type partials, get matches |
+| **git-delta** | `git diff` pager | Side-by-side diffs with syntax highlighting — pre-wired in `~/.gitconfig` |
+| **btop** | `top` / `htop` | GPU-accelerated, color-rich, mouse-driven system monitor |
+| **duf** | `df` | Friendly disk-usage table with colors (aliased over `df`) |
+| **dust** | `du` | Visual tree of biggest dirs (aliased over `du`) |
+| **fastfetch** | neofetch | Auto-runs once on each login terminal — ASCII Arch logo + system summary |
+| **onefetch** | — | Run inside any git repo for an at-a-glance project summary |
+| **tealdeer** (`tldr`) | `man` | Cheatsheet-style command reference: `tldr tar`, `tldr git rebase` |
+
+#### Fonts
+
+| Package | Purpose |
+|---|---|
+| `ttf-jetbrains-mono-nerd` | JetBrains Mono with Nerd Font glyphs — required for starship and eza icons |
+| `ttf-jetbrains-mono` | Plain JetBrains Mono — fallback if nerd glyphs aren't needed |
+| `ttf-fira-code` | Fira Code — alternate ligature font, second fallback in WezTerm config |
 
 zsh is set as the user's login shell during install via `chsh`. Log out and back in (or run `exec zsh`) the first time.
+
+### First-boot wow tour
+
+After install, open a terminal and try:
+
+```bash
+fastfetch              # auto-runs once on login; re-run any time
+btop                   # full-screen system monitor
+ll                     # eza with icons + git status
+bat README.md          # syntax-highlighted view
+z <fragment>           # smart-cd to any visited dir (zoxide)
+Ctrl-R                 # fzf fuzzy history picker
+Ctrl-T                 # fzf fuzzy file picker (inserts result at cursor)
+Alt-C                  # fzf fuzzy directory picker (cd's into result)
+rg -i password /etc    # ripgrep — much faster than `grep -r`
+fd -e md               # find all markdown files
+git log -p             # delta-rendered diffs (side-by-side, syntax-aware)
+onefetch               # at-a-glance summary inside any git repo
+tldr tar               # cheatsheet for any command
+```
 
 ### Pre-configured dotfiles
 
 The installer drops working starter configs into your home — extend or replace at will:
 
 ```
-~/.zshrc                      # plugins sourced, history, two-line cyan/magenta prompt
-~/.tmux.conf                  # Ctrl-Space prefix, vi-mode, themed status bar
-~/.config/wezterm/wezterm.lua # full JesterNet palette, 85% bg opacity, JetBrains Mono
-~/.config/ghostty/config      # same palette in Ghostty's key=value syntax
+~/.zshrc                       # plugins, history, fzf/zoxide/eza wired up
+~/.zlogin                      # fastfetch on login
+~/.tmux.conf                   # Ctrl-Space prefix, vi-mode, themed status bar
+~/.gitconfig                   # delta as pager + side-by-side diffs (only if absent)
+~/.config/starship.toml        # cyan/magenta prompt with git/lang/duration
+~/.config/wezterm/wezterm.lua  # full JesterNet palette, 85% bg opacity
+~/.config/ghostty/config       # same palette in Ghostty's key=value syntax
+```
+
+Set your git identity once:
+
+```bash
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
 ```
 
 ### JesterNet color palette in the terminals

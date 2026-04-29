@@ -1396,11 +1396,15 @@ install_terminal_stack() {
     log_step "Installing terminal stack (zsh, tmux, WezTerm, Ghostty)..."
 
     # Official-repo packages — Warp is AUR and handled in install-yay.sh tail.
+    # Three groups, ordered by purpose for review at a glance:
+    #   shells/multiplexer/terminals/fonts → modern CLI replacements → wow utils
     if ! arch-chroot /mnt pacman -S --needed --noconfirm \
             zsh tmux \
             wezterm ghostty \
             zsh-fast-syntax-highlighting zsh-autosuggestions zsh-completions \
-            ttf-jetbrains-mono ttf-fira-code; then
+            ttf-jetbrains-mono ttf-jetbrains-mono-nerd ttf-fira-code \
+            starship fzf eza bat fd ripgrep zoxide git-delta \
+            btop duf dust tealdeer fastfetch onefetch; then
         log_warning "Some terminal packages failed to install — continuing"
     fi
 
@@ -1419,8 +1423,9 @@ install_terminal_stack() {
     # ------------------------------------------------------------------
     cat > "/mnt/home/${USERNAME}/.zshrc" << 'ZSHRC_EOF'
 # JesterNet OS — zsh starter config
-# Extend freely; the base sources Arch packages: zsh-autosuggestions,
-# zsh-fast-syntax-highlighting, zsh-completions.
+# Pulls together the modern shell stack: starship prompt, fzf fuzzy
+# finder, zoxide smart-cd, eza/bat/fd/ripgrep, plus zsh autosuggestions
+# and fast-syntax-highlighting. Extend freely.
 
 # ---- History --------------------------------------------------------------
 HISTFILE=~/.histfile
@@ -1441,27 +1446,55 @@ zstyle ':completion:*' menu select
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
 
 # ---- Plugins (load order matters) -----------------------------------------
-# autosuggestions first, fast-syntax-highlighting LAST.
-if [[ -r /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+# zsh-autosuggestions: ghostly inline preview from history.
+[[ -r /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && \
     source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
-    ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#6272a4'
-fi
-if [[ -r /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh ]]; then
-    source /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
-fi
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#6272a4'
 
-# ---- Aliases --------------------------------------------------------------
-alias ls='ls --color=auto'
-alias ll='ls -lah'
-alias la='ls -A'
+# fzf: Ctrl-R fuzzy history, Ctrl-T fuzzy file picker, Alt-C fuzzy cd.
+[[ -r /usr/share/fzf/key-bindings.zsh ]] && source /usr/share/fzf/key-bindings.zsh
+[[ -r /usr/share/fzf/completion.zsh   ]] && source /usr/share/fzf/completion.zsh
+
+# zoxide: `z foo` to jump to any dir you've visited; `zi foo` for interactive picker.
+command -v zoxide >/dev/null && eval "$(zoxide init zsh)"
+
+# fast-syntax-highlighting: MUST come after other plugins that bind keymaps,
+# otherwise its hooks miss those bindings.
+[[ -r /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh ]] && \
+    source /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
+
+# ---- Modern CLI replacements ---------------------------------------------
+if command -v eza >/dev/null; then
+    alias ls='eza --icons --group-directories-first'
+    alias ll='eza -lah --icons --git --group-directories-first'
+    alias la='eza -a --icons'
+    alias tree='eza --tree --icons --git-ignore'
+fi
+command -v bat  >/dev/null && export BAT_THEME='Dracula'
+command -v duf  >/dev/null && alias df='duf'
+command -v dust >/dev/null && alias du='dust'
+
+# ---- fzf: JesterNet palette + fd as default file source ------------------
+if command -v fd >/dev/null; then
+    export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
+    export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+    export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+fi
+export FZF_DEFAULT_OPTS="
+  --height=40% --layout=reverse --border=rounded
+  --color=bg+:#1a1a25,bg:#0a0a0f,spinner:#00ffff,hl:#ff00ff
+  --color=fg:#f8f8f2,header:#ff00ff,info:#00ffff,pointer:#00ffff
+  --color=marker:#00ffff,fg+:#f8f8f2,prompt:#ff00ff,hl+:#ff00ff"
+
+# ---- Other aliases --------------------------------------------------------
 alias grep='grep --color=auto'
 alias diff='diff --color=auto'
+alias rg='rg --smart-case'
 
-# ---- Prompt — JesterNet cyan/magenta two-line --------------------------
-PROMPT='%F{magenta}╭─%F{cyan}%n@%m %F{magenta}in %F{cyan}%~
-%F{magenta}╰─%F{cyan}❯%f '
+# ---- Starship prompt — must run last (it sets PROMPT/RPROMPT) -----------
+command -v starship >/dev/null && eval "$(starship init zsh)"
 
-# Uncomment for vi-mode keybindings:
+# Uncomment for vi-mode:
 # bindkey -v
 ZSHRC_EOF
 
@@ -1547,8 +1580,13 @@ config.colors = {
 }
 
 -- ---- Font -----------------------------------------------------------------
+-- Nerd Font first so starship icons + eza icons render correctly. Falls back
+-- to plain JetBrains Mono / Fira Code if the nerd-font package isn't present.
 config.font = wezterm.font_with_fallback {
-  'JetBrains Mono', 'Fira Code', 'monospace',
+  'JetBrainsMono Nerd Font',
+  'JetBrains Mono',
+  'Fira Code',
+  'monospace',
 }
 config.font_size = 11.0
 config.line_height = 1.05
@@ -1605,19 +1643,163 @@ palette = 13=#ff77ff
 palette = 14=#77ffff
 palette = 15=#ffffff
 
-font-family = JetBrains Mono
+font-family = JetBrainsMono Nerd Font
 font-size = 11
 
 window-padding-x = 12
 window-padding-y = 8
 GHOSTTY_EOF
 
-    # Single chown sweep — cheaper than chown'ing each file individually.
+    # ------------------------------------------------------------------
+    # ~/.config/starship.toml — JesterNet-themed prompt
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.config/starship.toml" << 'STARSHIP_EOF'
+# JesterNet OS — starship prompt
+# Cyan/magenta cyberpunk; Nerd Font glyphs throughout (icons render
+# only if the terminal is using the nerd-font variant of JetBrains Mono).
+
+format = """
+[╭─](bold magenta)$username$hostname$directory$git_branch$git_status$rust$python$nodejs$golang$cmd_duration
+[╰─](bold magenta)$character"""
+
+add_newline = false
+
+[character]
+success_symbol = "[❯](bold cyan)"
+error_symbol   = "[❯](bold red)"
+vimcmd_symbol  = "[❮](bold green)"
+
+[username]
+style_user = "bold cyan"
+style_root = "bold red"
+format     = "[$user]($style)"
+show_always = false
+
+[hostname]
+ssh_only = false
+style    = "bold cyan"
+format   = "[@$hostname]($style) "
+
+[directory]
+style              = "bold cyan"
+format             = "[$path]($style) "
+truncation_length  = 5
+truncate_to_repo   = true
+read_only          = " "
+
+[git_branch]
+symbol = " "
+style  = "bold magenta"
+format = "[$symbol$branch]($style) "
+
+[git_status]
+style  = "bold magenta"
+format = "[$all_status$ahead_behind]($style) "
+ahead     = "⇡${count}"
+behind    = "⇣${count}"
+diverged  = "⇕⇡${ahead_count}⇣${behind_count}"
+conflicted = "="
+untracked  = "?${count}"
+modified   = "!${count}"
+staged     = "+${count}"
+renamed    = "»${count}"
+deleted    = "✘${count}"
+stashed    = "$"
+
+[cmd_duration]
+min_time = 2000
+style    = "bold yellow"
+format   = "[took $duration]($style) "
+
+[rust]
+symbol = " "
+style  = "bold #ff5577"
+format = "[$symbol$version]($style) "
+
+[python]
+symbol = " "
+style  = "bold yellow"
+format = "[$symbol$version]($style) "
+
+[nodejs]
+symbol = " "
+style  = "bold green"
+format = "[$symbol$version]($style) "
+
+[golang]
+symbol = " "
+style  = "bold cyan"
+format = "[$symbol$version]($style) "
+
+[package]
+disabled = true
+STARSHIP_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.zlogin — runs once per login shell. fastfetch shows a quick
+    # ASCII splash with system info — this is the "wow" first-boot moment
+    # for users coming from Windows. Skipped silently in nested shells.
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.zlogin" << 'ZLOGIN_EOF'
+# Run only on real interactive login shells (not on every nested zsh).
+if [[ -o login && -t 1 ]] && command -v fastfetch >/dev/null; then
+    fastfetch
+fi
+ZLOGIN_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.gitconfig — only seeded if the user doesn't already have one.
+    # Sets up git-delta for pretty side-by-side diffs and useful colors.
+    # User identity (name/email) is intentionally NOT set; the user runs
+    # `git config --global user.name/email` themselves.
+    # ------------------------------------------------------------------
+    if [[ ! -f "/mnt/home/${USERNAME}/.gitconfig" ]]; then
+        cat > "/mnt/home/${USERNAME}/.gitconfig" << 'GITCONFIG_EOF'
+# JesterNet OS — git starter config
+# Set your identity:
+#   git config --global user.name  "Your Name"
+#   git config --global user.email "you@example.com"
+
+[core]
+    pager = delta
+
+[interactive]
+    diffFilter = delta --color-only
+
+[delta]
+    features = side-by-side line-numbers decorations
+    syntax-theme = Dracula
+    navigate = true
+
+[delta "decorations"]
+    commit-decoration-style = bold magenta box ul
+    file-style = bold cyan ul
+    file-decoration-style = none
+    hunk-header-decoration-style = cyan box
+
+[merge]
+    conflictstyle = diff3
+
+[diff]
+    colorMoved = default
+
+[init]
+    defaultBranch = main
+
+[pull]
+    rebase = false
+GITCONFIG_EOF
+    fi
+
+    # Single chown sweep — covers the four direct-home files plus the .config
+    # subdirs we created. Recursive on .config is safe here because GNOME
+    # hasn't run yet, so nothing else owns subdirs there.
     arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" \
         "/home/${USERNAME}/.zshrc" \
+        "/home/${USERNAME}/.zlogin" \
         "/home/${USERNAME}/.tmux.conf" \
-        "/home/${USERNAME}/.config/wezterm" \
-        "/home/${USERNAME}/.config/ghostty" 2>/dev/null || true
+        "/home/${USERNAME}/.gitconfig" \
+        "/home/${USERNAME}/.config" 2>/dev/null || true
 
     log_success "Terminal stack installed (Warp queued for post-boot AUR install)"
 }
@@ -1654,8 +1836,22 @@ Congratulations! Your JesterNet OS installation is complete.
 After logging in, run these commands to complete your setup:
 
 Pre-installed terminal stack (already in /usr/bin):
-   zsh (default shell)  ·  tmux  ·  WezTerm  ·  Ghostty
-   Configs are in ~/.zshrc, ~/.tmux.conf, ~/.config/{wezterm,ghostty}/
+   Shell:       zsh (default)  ·  tmux  ·  starship prompt
+   Terminals:   WezTerm  ·  Ghostty   (Warp installs in step 1 below)
+   Modern CLI:  eza · bat · fd · ripgrep · zoxide · fzf · git-delta
+   Wow utils:   btop · duf · dust · fastfetch · onefetch · tealdeer
+
+   Try right now:
+     fastfetch                # ASCII splash + system info (auto-runs on login)
+     btop                     # system monitor
+     z <dirname>              # smart-cd via zoxide
+     Ctrl-R                   # fzf fuzzy history search
+     ll                       # eza with icons + git status
+     bat <file>               # syntax-highlighted cat
+     onefetch                 # repo info, run inside any git repo
+
+   Configs:    ~/.zshrc · ~/.tmux.conf · ~/.gitconfig
+               ~/.config/{wezterm,ghostty,starship.toml}
 
 1. Install yay + Warp terminal (AUR):
    ./install-yay.sh
