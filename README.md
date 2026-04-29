@@ -23,6 +23,7 @@ Welcome to JesterNet OS - a complete desktop transformation for users migrating 
 - [Desktop Styles](#desktop-styles)
 - [Theme Components](#theme-components)
 - [Development Stacks](#development-stacks)
+- [System Baseline](#system-baseline)
 - [For Windows Users](#for-windows-users)
 - [For macOS Users](#for-macos-users)
 - [Customization](#customization)
@@ -336,6 +337,70 @@ new-svelte-app my-app         # SvelteKit + Tailwind
 new-react-app my-app          # React + Vite + Tailwind
 new-vue-app my-app            # Vue + Vite + Tailwind
 ```
+
+---
+
+## System Baseline
+
+JesterNet OS ships on the Linux 7.0 kernel series, which brings substantial changes — Rust drivers stable, AccECN networking, XFS self-healing, BPF-filtered io_uring, SHA-512 module signing, and improved swap performance among them. To make these gains measurable rather than vibes-based, the package includes a portable baseline tool.
+
+### Run a baseline
+
+```bash
+cd ~/JesterNet
+./linux-baseline.sh                  # writes baseline-<host>-<UTC>.txt to PWD
+./linux-baseline.sh ~/baselines      # custom output dir
+```
+
+Total runtime is roughly 90 seconds. The script needs no extra packages — it works against a stock Linux install using `bash`, `coreutils`, and `openssl`. If `sysbench`, `fio`, `ethtool`, or `dmidecode` are present, it uses them automatically for richer numbers.
+
+### What it captures
+
+| Section | Contents |
+|---|---|
+| System identity | Hostname, distro, kernel, uname, DMI vendor/product, boot mode, distro kernel package |
+| Kernel & boot | Kernel command line, preempt model, taint flags, `systemd-analyze` boot time |
+| CPU | `lscpu` dump, governor, scaling driver, `intel_pstate` status, EPP, microcode, all `vulnerabilities/*` mitigation flags |
+| Memory | Total / swap / hugepages, swappiness, THP mode, zswap configuration |
+| Storage | `lsblk`, mount table (with pseudo-FS filtered out) |
+| Network | `ip` link/addr, default gateway, per-interface ethtool speed and driver |
+| **Linux 7.0 probes** | `CONFIG_RUST`, `CONFIG_RUSTC_VERSION_TEXT`, `CONFIG_BPF_LSM`, `CONFIG_IO_URING`, `CONFIG_MODULE_SIG_HASH`, `CONFIG_XFS_ONLINE_SCRUB`, `CONFIG_XFS_DRAIN_INTENTS`, `CONFIG_XFS_LIVE_HOOKS`, all four `tcp_ecn*` AccECN sysctls, `kernel.io_uring_disabled`, count of loaded Rust modules |
+| Power & frequency | Per-core current frequency min/max/avg, AC vs battery |
+| Benchmarks | OpenSSL AES-256-GCM single + multi-thread, OpenSSL SHA-256, `dd` memcpy bandwidth proxy, `dd` direct-IO sequential disk write & read; optional `sysbench cpu/memory` and `fio randread 4k` if installed |
+| Run info | Total duration, tools detected, user, root flag |
+
+### Output format
+
+Every fact is written as a `key=value` line under markdown section headers, so two reports diff cleanly with `diff -u`:
+
+```bash
+diff -u ~/baselines/baseline-host-A.txt ~/baselines/baseline-host-B.txt | less
+```
+
+This is the recommended workflow:
+
+1. Run baseline immediately after first boot — captures the stock JesterNet 7.0 numbers.
+2. Run again after any meaningful change (kernel upgrade, governor switch, BIOS update, mitigations toggle).
+3. Diff to attribute the change.
+
+### Tunable knobs
+
+```bash
+BASELINE_DD_MB=4096       ./linux-baseline.sh   # bigger disk bench (default 1024)
+BASELINE_CPU_SECONDS=10   ./linux-baseline.sh   # longer openssl runs (default 5)
+BASELINE_MEM_GB=16        ./linux-baseline.sh   # bigger memcpy proxy (default 8)
+BASELINE_BENCH_DIR=/mnt/data ./linux-baseline.sh   # bench a specific drive
+```
+
+The script auto-skips tmpfs for disk benchmarks — `/tmp` on Arch is RAM-backed and would produce meaningless 47 GB/s "disk" numbers. The bench directory is auto-picked from `$PWD`, `$HOME`, then `/var/tmp`, choosing the first writable non-tmpfs location. Override with `BASELINE_BENCH_DIR` to test a specific block device.
+
+### Caveats worth reading before comparing
+
+- **CPU governor** swings benches 20–40%. Captured under `cpu_governor` — confirm both runs used the same value before blaming hardware.
+- **Mitigations matter.** `mitigations=off` in the kernel cmdline can shift CPU numbers significantly. The script captures every flag under `/sys/devices/system/cpu/vulnerabilities/`.
+- **Direct-IO read** is the disk number you want. If the filesystem rejects O_DIRECT (some btrfs configs), the script falls back to a cached read and labels the section accordingly.
+- **`loaded_rust_modules=0` is normal.** `CONFIG_RUST=y` means the kernel can load Rust modules; the upstream Rust drivers in 7.0 are still narrow, so few systems have one bound at runtime.
+- **Pre-7.0 detection.** On older kernels, the four `sysctl_net_ipv4_tcp_ecn_option*` keys read `MISSING` — the cleanest single-glance test of "is this kernel 7.0 or older."
 
 ---
 

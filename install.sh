@@ -1384,6 +1384,16 @@ cleanup() {
     rm -f /mnt/root/chroot-setup.sh
     rm -f /mnt/root/install-desktop.sh
 
+    # Install the system baseline tool to the user's home so it's available
+    # alongside the other first-login scripts (./install-yay.sh, etc.).
+    local CLEANUP_SCRIPT_DIR
+    CLEANUP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" ]; then
+        cp "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" /mnt/home/${USERNAME}/linux-baseline.sh
+        chmod +x /mnt/home/${USERNAME}/linux-baseline.sh
+        arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/linux-baseline.sh
+    fi
+
     # Create first-boot instruction file
     cat > /mnt/home/${USERNAME}/FIRST_BOOT_README.txt << README_EOF
 ╔══════════════════════════════════════════════════════════════════════════╗
@@ -1403,7 +1413,12 @@ After logging in, run these commands to complete your setup:
 3. Install development stacks (optional):
    ./install-dev-stacks.sh
 
-4. Reboot to apply all changes:
+4. Capture a system baseline (optional, ~90s):
+   ./linux-baseline.sh
+   Writes baseline-<host>-<UTC>.txt for diffing against future runs
+   (kernel upgrades, governor changes, etc.). See README for details.
+
+5. Reboot to apply all changes:
    reboot
 
 Enjoy your new system!
