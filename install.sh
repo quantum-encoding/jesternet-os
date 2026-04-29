@@ -28,6 +28,25 @@ set -o pipefail  # bubble pipe failures up to $? so try_step sees them
 # Ensure TERM is set (required for SSH/ADB deployments)
 export TERM="${TERM:-xterm}"
 
+# ----------------------------------------------------------------------------
+# Default-init every variable that may be set by an optional config file.
+# Without these, set -u trips the moment any code-path checks `[ -n "$VAR" ]`
+# while running interactively (no config file sourced). Use := so an existing
+# value (e.g. exported in the env) wins; otherwise the var becomes "".
+# ----------------------------------------------------------------------------
+: "${CONFIG_FILE:=}"            # path to sourced config file, if any
+: "${TARGET_DISK:=}"            # /dev/nvmeXn1 or /dev/sdX from config
+: "${USER_PASSWORD:=}"          # if set, skip interactive prompt
+: "${DESKTOP_STYLE:=}"          # dock | windows
+: "${DEV_STACKS:=}"             # space-separated list, e.g. "tauri go python"
+: "${MIRROR_COUNTRY:=}"         # reflector --country argument
+: "${STATIC_IP:=}"              # CIDR static IP for enterprise config
+: "${GATEWAY:=}"                # gateway IP, paired with STATIC_IP
+: "${HTTP_PROXY:=}"             # proxy URL for /etc/environment
+: "${SSH_AUTHORIZED_KEYS:=}"    # path to authorized_keys to seed
+: "${DOMAIN_REALM:=}"           # AD/realm join string
+: "${POST_INSTALL_HOOK:=}"      # extra script to run at the end
+
 # Failure ledger — populated by try_step / try_func, printed at end.
 FAILED_STEPS=()
 SKIPPED_STEPS=()
