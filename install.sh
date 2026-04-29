@@ -1358,6 +1358,17 @@ cd yay || exit 1
 if makepkg -si --noconfirm; then
     cd .. && rm -rf yay
     echo "✓ yay installed successfully!"
+
+    # Once yay is in, pull the AUR-only terminal: Warp.
+    # Non-fatal — user can retry later with: yay -S warp-terminal-bin
+    echo ""
+    echo "Installing Warp terminal from AUR..."
+    if yay -S --noconfirm --needed warp-terminal-bin; then
+        echo "✓ Warp terminal installed."
+    else
+        echo "⚠ Warp install failed. Retry manually with: yay -S warp-terminal-bin"
+    fi
+
     exit 0
 else
     cd ..
@@ -1371,6 +1382,244 @@ YAY_USER_EOF
     arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/install-yay.sh
 
     log_success "AUR helper installer created"
+}
+
+# ============================================================================
+# Terminal Stack
+# ----------------------------------------------------------------------------
+# Installs a curated terminal environment: zsh + plugins, tmux, two GPU
+# terminals (WezTerm, Ghostty), and JetBrains Mono. Warp is queued for the
+# post-boot install-yay.sh step because it's AUR-only.
+# ============================================================================
+
+install_terminal_stack() {
+    log_step "Installing terminal stack (zsh, tmux, WezTerm, Ghostty)..."
+
+    # Official-repo packages — Warp is AUR and handled in install-yay.sh tail.
+    if ! arch-chroot /mnt pacman -S --needed --noconfirm \
+            zsh tmux \
+            wezterm ghostty \
+            zsh-fast-syntax-highlighting zsh-autosuggestions zsh-completions \
+            ttf-jetbrains-mono ttf-fira-code; then
+        log_warning "Some terminal packages failed to install — continuing"
+    fi
+
+    # Make zsh the user's login shell. chsh failure is non-fatal — user can
+    # rerun the command themselves. We use absolute path because /etc/shells
+    # may not yet be fully populated for fresh root chroots.
+    if ! arch-chroot /mnt chsh -s /usr/bin/zsh "${USERNAME}" 2>/dev/null; then
+        log_warning "chsh failed — user can run: chsh -s /usr/bin/zsh"
+    fi
+
+    mkdir -p "/mnt/home/${USERNAME}/.config/wezterm"
+    mkdir -p "/mnt/home/${USERNAME}/.config/ghostty"
+
+    # ------------------------------------------------------------------
+    # ~/.zshrc
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.zshrc" << 'ZSHRC_EOF'
+# JesterNet OS — zsh starter config
+# Extend freely; the base sources Arch packages: zsh-autosuggestions,
+# zsh-fast-syntax-highlighting, zsh-completions.
+
+# ---- History --------------------------------------------------------------
+HISTFILE=~/.histfile
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE INC_APPEND_HISTORY EXTENDED_HISTORY
+
+# ---- Word boundaries ------------------------------------------------------
+# Stop treating / and . as word characters so Alt-B / Alt-F jump path segments.
+WORDCHARS=${WORDCHARS//[\/\.]}
+
+# ---- Completion -----------------------------------------------------------
+if [[ -d /usr/share/zsh/site-functions ]]; then
+    fpath=(/usr/share/zsh/site-functions $fpath)
+fi
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+
+# ---- Plugins (load order matters) -----------------------------------------
+# autosuggestions first, fast-syntax-highlighting LAST.
+if [[ -r /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+    source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+    ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#6272a4'
+fi
+if [[ -r /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh ]]; then
+    source /usr/share/zsh/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
+fi
+
+# ---- Aliases --------------------------------------------------------------
+alias ls='ls --color=auto'
+alias ll='ls -lah'
+alias la='ls -A'
+alias grep='grep --color=auto'
+alias diff='diff --color=auto'
+
+# ---- Prompt — JesterNet cyan/magenta two-line --------------------------
+PROMPT='%F{magenta}╭─%F{cyan}%n@%m %F{magenta}in %F{cyan}%~
+%F{magenta}╰─%F{cyan}❯%f '
+
+# Uncomment for vi-mode keybindings:
+# bindkey -v
+ZSHRC_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.tmux.conf
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.tmux.conf" << 'TMUX_EOF'
+# JesterNet OS — tmux starter config
+
+# Prefix: Ctrl-Space (avoids the C-b that breaks vim, and the C-a that breaks readline).
+unbind C-b
+set -g prefix C-Space
+bind C-Space send-prefix
+
+# Mouse + true color
+set -g mouse on
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",xterm-256color:RGB,*:RGB"
+
+# Generous scrollback and snappy escape.
+set -g history-limit 50000
+set -sg escape-time 10
+
+# vi-mode for copy mode.
+setw -g mode-keys vi
+
+# 1-indexed windows/panes; renumber on close.
+set -g base-index 1
+setw -g pane-base-index 1
+set -g renumber-windows on
+
+# Reload config in place.
+bind r source-file ~/.tmux.conf \; display "Reloaded ~/.tmux.conf"
+
+# Splits open in the current pane's working directory.
+bind | split-window -h -c "#{pane_current_path}"
+bind - split-window -v -c "#{pane_current_path}"
+
+# JesterNet cyan/magenta status bar.
+set -g status-bg "#0a0a0f"
+set -g status-fg "#bfbfbf"
+set -g status-left-length 30
+set -g status-left  "#[fg=#00ffff,bold] #S #[fg=#ff00ff]│ "
+set -g status-right "#[fg=#ff00ff]│ #[fg=#00ffff]%H:%M #[fg=#ff00ff]│ #[fg=#00ffff]%d-%b "
+setw -g window-status-current-style "fg=#00ffff,bold"
+setw -g window-status-style         "fg=#6272a4"
+set -g pane-active-border-style     "fg=#00ffff"
+set -g pane-border-style            "fg=#1a1a25"
+TMUX_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.config/wezterm/wezterm.lua  — JesterNet theme + transparency
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.config/wezterm/wezterm.lua" << 'WEZTERM_EOF'
+-- JesterNet OS — WezTerm config
+-- Cyan/magenta cyberpunk palette, glassmorphic transparency, JetBrains Mono.
+
+local wezterm = require 'wezterm'
+local config = wezterm.config_builder()
+
+-- ---- Palette --------------------------------------------------------------
+config.colors = {
+  foreground     = '#f8f8f2',
+  background     = '#0a0a0f',
+  cursor_bg      = '#00ffff',
+  cursor_fg      = '#0a0a0f',
+  cursor_border  = '#00ffff',
+  selection_bg   = '#ff00ff',
+  selection_fg   = '#0a0a0f',
+  ansi = {
+    '#14141e', '#ff5577', '#50fa7b', '#f1fa8c',
+    '#6272a4', '#ff00ff', '#00ffff', '#bfbfbf',
+  },
+  brights = {
+    '#44475a', '#ff7799', '#69ff94', '#ffffa5',
+    '#7e8eb6', '#ff77ff', '#77ffff', '#ffffff',
+  },
+  tab_bar = {
+    background   = '#0a0a0f',
+    active_tab   = { bg_color = '#1a1a25', fg_color = '#00ffff' },
+    inactive_tab = { bg_color = '#0a0a0f', fg_color = '#6272a4' },
+  },
+}
+
+-- ---- Font -----------------------------------------------------------------
+config.font = wezterm.font_with_fallback {
+  'JetBrains Mono', 'Fira Code', 'monospace',
+}
+config.font_size = 11.0
+config.line_height = 1.05
+
+-- ---- Window ---------------------------------------------------------------
+config.window_background_opacity = 0.85
+config.window_padding = { left = 12, right = 12, top = 8, bottom = 8 }
+config.window_decorations = 'RESIZE'
+config.use_fancy_tab_bar = true
+config.hide_tab_bar_if_only_one_tab = true
+
+-- ---- Cursor / behavior ----------------------------------------------------
+config.default_cursor_style = 'BlinkingBlock'
+config.cursor_blink_rate    = 600
+config.scrollback_lines     = 50000
+config.audible_bell         = 'Disabled'
+
+return config
+WEZTERM_EOF
+
+    # ------------------------------------------------------------------
+    # ~/.config/ghostty/config — same palette, ghostty syntax
+    # ------------------------------------------------------------------
+    cat > "/mnt/home/${USERNAME}/.config/ghostty/config" << 'GHOSTTY_EOF'
+# JesterNet OS — Ghostty config
+
+background = #0a0a0f
+foreground = #f8f8f2
+background-opacity = 0.85
+background-blur-radius = 20
+
+cursor-color = #00ffff
+cursor-style = block
+cursor-style-blink = true
+
+selection-background = #ff00ff
+selection-foreground = #0a0a0f
+
+# 16-color ANSI — JesterNet cyan/magenta accents
+palette = 0=#14141e
+palette = 1=#ff5577
+palette = 2=#50fa7b
+palette = 3=#f1fa8c
+palette = 4=#6272a4
+palette = 5=#ff00ff
+palette = 6=#00ffff
+palette = 7=#bfbfbf
+palette = 8=#44475a
+palette = 9=#ff7799
+palette = 10=#69ff94
+palette = 11=#ffffa5
+palette = 12=#7e8eb6
+palette = 13=#ff77ff
+palette = 14=#77ffff
+palette = 15=#ffffff
+
+font-family = JetBrains Mono
+font-size = 11
+
+window-padding-x = 12
+window-padding-y = 8
+GHOSTTY_EOF
+
+    # Single chown sweep — cheaper than chown'ing each file individually.
+    arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" \
+        "/home/${USERNAME}/.zshrc" \
+        "/home/${USERNAME}/.tmux.conf" \
+        "/home/${USERNAME}/.config/wezterm" \
+        "/home/${USERNAME}/.config/ghostty" 2>/dev/null || true
+
+    log_success "Terminal stack installed (Warp queued for post-boot AUR install)"
 }
 
 # ============================================================================
@@ -1404,8 +1653,13 @@ Congratulations! Your JesterNet OS installation is complete.
 
 After logging in, run these commands to complete your setup:
 
-1. Install yay (AUR helper):
+Pre-installed terminal stack (already in /usr/bin):
+   zsh (default shell)  ·  tmux  ·  WezTerm  ·  Ghostty
+   Configs are in ~/.zshrc, ~/.tmux.conf, ~/.config/{wezterm,ghostty}/
+
+1. Install yay + Warp terminal (AUR):
    ./install-yay.sh
+   (yay first, then warp-terminal-bin from AUR)
 
 2. Apply the JesterNet theme:
    ./setup-theme.sh
@@ -1521,6 +1775,7 @@ main() {
     try_func "Install JesterNet theme"   install_jesternet_theme
     try_func "Install dev stacks"        install_dev_stacks
     try_func "Apply enterprise config"   configure_enterprise
+    try_func "Install terminal stack"    install_terminal_stack
     try_func "Install AUR helper (yay)"  install_aur_helper
 
     cleanup

@@ -23,6 +23,7 @@ Welcome to JesterNet OS - a complete desktop transformation for users migrating 
 - [Desktop Styles](#desktop-styles)
 - [Theme Components](#theme-components)
 - [Development Stacks](#development-stacks)
+- [Terminal Stack](#terminal-stack)
 - [System Baseline](#system-baseline)
 - [For Windows Users](#for-windows-users)
 - [For macOS Users](#for-macos-users)
@@ -337,6 +338,72 @@ new-svelte-app my-app         # SvelteKit + Tailwind
 new-react-app my-app          # React + Vite + Tailwind
 new-vue-app my-app            # Vue + Vite + Tailwind
 ```
+
+---
+
+## Terminal Stack
+
+JesterNet OS ships with a curated, high-quality terminal environment so you don't spend your first hour configuring shells. Multiple terminals are installed side-by-side because different tools suit different jobs — pick one per task or run them in parallel.
+
+### What's installed
+
+| Tool | Source | Role |
+|---|---|---|
+| **zsh** + plugins | `extra` | Default login shell, with fast-syntax-highlighting (`zsh-fast-syntax-highlighting`), inline autosuggestions (`zsh-autosuggestions`), and extended completions (`zsh-completions`) |
+| **WezTerm** | `extra/wezterm` | GPU-accelerated, Lua-configured terminal — pre-themed in JesterNet cyan/magenta with 85% transparency |
+| **Ghostty** | `extra/ghostty` | Mitchell Hashimoto's GPU terminal — same palette, same transparency, simpler config syntax |
+| **Warp** | AUR (`warp-terminal-bin`) | Modern AI-augmented terminal — installed automatically by `./install-yay.sh` once yay is set up |
+| **tmux** | `extra` | Terminal multiplexer with vi-mode copy, Ctrl-Space prefix, and a JesterNet-themed status bar |
+| **JetBrains Mono** + **Fira Code** | `extra` | Programming fonts referenced by the WezTerm and Ghostty configs |
+
+zsh is set as the user's login shell during install via `chsh`. Log out and back in (or run `exec zsh`) the first time.
+
+### Pre-configured dotfiles
+
+The installer drops working starter configs into your home — extend or replace at will:
+
+```
+~/.zshrc                      # plugins sourced, history, two-line cyan/magenta prompt
+~/.tmux.conf                  # Ctrl-Space prefix, vi-mode, themed status bar
+~/.config/wezterm/wezterm.lua # full JesterNet palette, 85% bg opacity, JetBrains Mono
+~/.config/ghostty/config      # same palette in Ghostty's key=value syntax
+```
+
+### JesterNet color palette in the terminals
+
+The terminal configs use the JesterNet master palette — same colors as the desktop theme, so windows and terminals read as one system rather than mismatched apps:
+
+| Role | Hex |
+|---|---|
+| Background | `#0a0a0f` |
+| Foreground | `#f8f8f2` |
+| Cursor / accent (cyan) | `#00ffff` |
+| Selection / signature (magenta) | `#ff00ff` |
+| ANSI 5 (magenta) | `#ff00ff` |
+| ANSI 6 (cyan) | `#00ffff` |
+
+### Why four terminals?
+
+Different terminals suit different workflows:
+
+- **WezTerm** for sessions that benefit from Lua scripting (per-domain configs, custom keybindings, multiplexing).
+- **Ghostty** for daily quick shells — fastest startup, minimal config surface.
+- **Warp** for command-recall, AI prompts, and shared workflows.
+- **tmux** for persistent sessions and remote work — runs inside any of the above.
+
+Set your default at the GNOME level (Settings → Default Applications) or just keep all four pinned to the dock and pick by mood.
+
+### tmux at a glance
+
+| Action | Binding |
+|---|---|
+| Prefix | `Ctrl-Space` |
+| Vertical split (current dir) | `prefix \|` |
+| Horizontal split (current dir) | `prefix -` |
+| Reload config | `prefix r` |
+| Copy mode (vi keys) | `prefix [` |
+
+Scrollback is set to 50,000 lines; mouse is enabled; windows/panes are 1-indexed and renumber on close.
 
 ---
 
