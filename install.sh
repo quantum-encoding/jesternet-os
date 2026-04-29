@@ -1363,10 +1363,19 @@ echo "Please log out and back in for all changes to take effect."
 THEME_EOF
 
     chmod +x /mnt/home/${USERNAME}/setup-theme.sh
-    arch-chroot /mnt chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/JesterNet
-    arch-chroot /mnt chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.local
-    arch-chroot /mnt chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.config
-    arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/setup-theme.sh
+    # `chown -R` on big extension trees can run for tens of seconds on slow
+    # Ventoy reads. Each call is wrapped with `timeout 180` so a stuck inode
+    # can't wedge the install — failures are non-fatal.
+    log_step "  fixing ownership: ~/JesterNet (largest, may take 30-60s) …"
+    timeout 180 arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/JesterNet" \
+        || log_warning "  chown -R JesterNet timed out — fix manually with: sudo chown -R $USERNAME:$USERNAME ~/JesterNet"
+    log_step "  fixing ownership: ~/.local …"
+    timeout 180 arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.local" \
+        || log_warning "  chown -R .local timed out — fix manually post-boot"
+    log_step "  fixing ownership: ~/.config …"
+    timeout 120 arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.config" \
+        || log_warning "  chown -R .config timed out — fix manually post-boot"
+    arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/setup-theme.sh" 2>/dev/null || true
 
     # Create autostart entry for first login (runs setup-theme.sh once then disables itself)
     mkdir -p /mnt/home/${USERNAME}/.config/autostart
@@ -1381,7 +1390,8 @@ Hidden=false
 X-GNOME-Autostart-enabled=true
 AUTOSTART_EOF
 
-    arch-chroot /mnt chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.config/autostart
+    timeout 30 arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.config/autostart" \
+        || log_warning "  chown autostart timed out (non-fatal)"
 
     log_success "JesterNet theme files installed (will auto-setup on first login)"
 }
@@ -1418,8 +1428,9 @@ STACKS_EOF
         esac
     done
 
-    chmod +x /mnt/home/${USERNAME}/install-dev-stacks.sh
-    arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/install-dev-stacks.sh
+    chmod +x "/mnt/home/${USERNAME}/install-dev-stacks.sh"
+    timeout 30 arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/install-dev-stacks.sh" \
+        || log_warning "  install-dev-stacks chown failed (non-fatal)"
 
     log_success "Development stack installer created"
 }
@@ -1474,35 +1485,38 @@ PROXYEOF
     # SSH configuration
     if [ "$SSH_ENABLED" = "true" ]; then
         log_step "Enabling SSH server..."
-        arch-chroot /mnt systemctl enable sshd
+        timeout 30 arch-chroot /mnt systemctl enable sshd \
+            || log_warning "  systemctl enable sshd failed (non-fatal)"
 
         # Inject authorized keys if provided
         if [ -n "$SSH_AUTHORIZED_KEYS" ] && [ -f "$SSH_AUTHORIZED_KEYS" ]; then
-            mkdir -p /mnt/home/${USERNAME}/.ssh
-            cp "$SSH_AUTHORIZED_KEYS" /mnt/home/${USERNAME}/.ssh/authorized_keys
-            chmod 700 /mnt/home/${USERNAME}/.ssh
-            chmod 600 /mnt/home/${USERNAME}/.ssh/authorized_keys
-            arch-chroot /mnt chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.ssh
+            mkdir -p "/mnt/home/${USERNAME}/.ssh"
+            cp "$SSH_AUTHORIZED_KEYS" "/mnt/home/${USERNAME}/.ssh/authorized_keys"
+            chmod 700 "/mnt/home/${USERNAME}/.ssh"
+            chmod 600 "/mnt/home/${USERNAME}/.ssh/authorized_keys"
+            timeout 30 arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}/.ssh" \
+                || log_warning "  ssh chown failed (non-fatal)"
             log_success "SSH authorized keys injected"
         fi
         log_success "SSH server enabled"
     fi
 
-    # Domain join preparation (AD/LDAP)
+    # Domain join preparation (AD/LDAP). 8 packages from official repos, but a
+    # mirror stall could hang for hours — 10-min timeout protects against that.
     if [ "$DOMAIN_JOIN_PREP" = "true" ]; then
         log_step "Installing domain join packages..."
-        arch-chroot /mnt pacman -S --noconfirm --needed \
-            sssd \
-            realmd \
-            krb5 \
-            samba \
-            oddjob \
-            oddjob-mkhomedir \
-            adcli \
-            openldap-clients
+        if timeout 600 arch-chroot /mnt pacman -S --noconfirm --needed \
+                sssd realmd krb5 samba oddjob oddjob-mkhomedir adcli openldap-clients
+        then
+            log_success "Domain join packages installed"
+        else
+            log_warning "Domain join packages timed out or failed — continuing"
+            FAILED_STEPS+=("domain join packages")
+        fi
 
-        # Pre-configure realm if provided
+        # Pre-configure realm if provided (no chroot needed — pure file write)
         if [ -n "$DOMAIN_REALM" ]; then
+            mkdir -p /mnt/etc/krb5.conf.d
             cat > /mnt/etc/krb5.conf.d/domain.conf << KRBEOF
 [realms]
 ${DOMAIN_REALM} = {
@@ -1515,17 +1529,22 @@ ${DOMAIN_REALM} = {
 ${DOMAIN_REALM,,} = ${DOMAIN_REALM}
 KRBEOF
         fi
-        log_success "Domain join packages installed"
     fi
 
-    # Run post-install hook if provided
+    # Run post-install hook if provided. This is the most dangerous call in
+    # the whole script — it executes arbitrary user code in the chroot. We
+    # cap it at 10 minutes; if a hook needs more, the user can split it.
     if [ -n "$POST_INSTALL_HOOK" ] && [ -f "$POST_INSTALL_HOOK" ]; then
-        log_step "Running post-install hook..."
+        log_step "Running post-install hook (capped at 10 min)..."
         cp "$POST_INSTALL_HOOK" /mnt/root/post-install-hook.sh
         chmod +x /mnt/root/post-install-hook.sh
-        arch-chroot /mnt /bin/bash /root/post-install-hook.sh
+        if timeout 600 arch-chroot /mnt /bin/bash /root/post-install-hook.sh; then
+            log_success "Post-install hook completed"
+        else
+            log_warning "Post-install hook timed out or failed (continuing)"
+            FAILED_STEPS+=("post-install hook")
+        fi
         rm -f /mnt/root/post-install-hook.sh
-        log_success "Post-install hook completed"
     fi
 
     log_success "Enterprise configuration applied"
@@ -1586,8 +1605,9 @@ else
 fi
 YAY_USER_EOF
 
-    chmod +x /mnt/home/${USERNAME}/install-yay.sh
-    arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/install-yay.sh
+    chmod +x "/mnt/home/${USERNAME}/install-yay.sh"
+    timeout 30 arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/install-yay.sh" \
+        || log_warning "  install-yay chown failed (non-fatal)"
 
     log_success "AUR helper installer created"
 }
@@ -1604,22 +1624,24 @@ install_terminal_stack() {
     log_step "Installing terminal stack (zsh, tmux, WezTerm, Ghostty)..."
 
     # Official-repo packages — Warp is AUR and handled in install-yay.sh tail.
-    # Three groups, ordered by purpose for review at a glance:
-    #   shells/multiplexer/terminals/fonts → modern CLI replacements → wow utils
-    if ! arch-chroot /mnt pacman -S --needed --noconfirm \
+    # 25+ packages from extra/community — capped at 10 min so a mirror stall
+    # can't hang the install. If it times out, user gets a usable system
+    # without the modern CLI suite and can `pacman -S` the missing bits later.
+    if ! timeout 600 arch-chroot /mnt pacman -S --needed --noconfirm \
             zsh tmux \
             wezterm ghostty \
             zsh-fast-syntax-highlighting zsh-autosuggestions zsh-completions \
             ttf-jetbrains-mono ttf-jetbrains-mono-nerd ttf-fira-code \
             starship fzf eza bat fd ripgrep zoxide git-delta \
             btop duf dust tealdeer fastfetch onefetch; then
-        log_warning "Some terminal packages failed to install — continuing"
+        log_warning "Terminal stack pacman -S timed out or failed — continuing"
+        FAILED_STEPS+=("terminal stack pacman")
     fi
 
     # Make zsh the user's login shell. chsh failure is non-fatal — user can
     # rerun the command themselves. We use absolute path because /etc/shells
     # may not yet be fully populated for fresh root chroots.
-    if ! arch-chroot /mnt chsh -s /usr/bin/zsh "${USERNAME}" 2>/dev/null; then
+    if ! timeout 30 arch-chroot /mnt chsh -s /usr/bin/zsh "${USERNAME}" 2>/dev/null; then
         log_warning "chsh failed — user can run: chsh -s /usr/bin/zsh"
     fi
 
@@ -2002,7 +2024,7 @@ GITCONFIG_EOF
     # Single chown sweep — covers the four direct-home files plus the .config
     # subdirs we created. Recursive on .config is safe here because GNOME
     # hasn't run yet, so nothing else owns subdirs there.
-    arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" \
+    timeout 60 arch-chroot /mnt chown -R "${USERNAME}:${USERNAME}" \
         "/home/${USERNAME}/.zshrc" \
         "/home/${USERNAME}/.zlogin" \
         "/home/${USERNAME}/.tmux.conf" \
@@ -2028,9 +2050,10 @@ cleanup() {
     local CLEANUP_SCRIPT_DIR
     CLEANUP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [ -f "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" ]; then
-        cp "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" /mnt/home/${USERNAME}/linux-baseline.sh
-        chmod +x /mnt/home/${USERNAME}/linux-baseline.sh
-        arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/linux-baseline.sh
+        cp "$CLEANUP_SCRIPT_DIR/linux-baseline.sh" "/mnt/home/${USERNAME}/linux-baseline.sh"
+        chmod +x "/mnt/home/${USERNAME}/linux-baseline.sh"
+        timeout 30 arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/linux-baseline.sh" \
+            || log_warning "  baseline chown failed (non-fatal)"
     fi
 
     # Create first-boot instruction file
@@ -2085,12 +2108,18 @@ Enjoy your new system!
 The Doctrine of Sovereign Artifacts is fulfilled.
 README_EOF
 
-    arch-chroot /mnt chown ${USERNAME}:${USERNAME} /home/${USERNAME}/FIRST_BOOT_README.txt
+    timeout 30 arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/FIRST_BOOT_README.txt" \
+        2>/dev/null || true
 
-    # Unmount
+    # Unmount. Use lazy-unmount fallback so a stray fd doesn't fail the whole
+    # install at the very last step. Same pattern as prepare_clean_state.
     log_step "Unmounting partitions..."
-    umount -R /mnt
-    swapoff -a
+    if mountpoint -q /mnt 2>/dev/null; then
+        umount -R /mnt 2>/dev/null \
+            || umount -lR /mnt 2>/dev/null \
+            || log_warning "  /mnt still busy — will release on reboot"
+    fi
+    swapoff -a 2>/dev/null || true
 
     log_success "Installation complete!"
 }
