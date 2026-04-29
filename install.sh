@@ -1983,8 +1983,9 @@ main() {
 # Entry Point
 # ============================================================================
 
-# Check for config file argument
-if [ -n "$1" ] && [ -f "$1" ]; then
+# Check for optional config file argument. Use ${1:-} so set -u doesn't trip
+# when the script is invoked without any arguments (the common case).
+if [ -n "${1:-}" ] && [ -f "$1" ]; then
     CONFIG_FILE="$1"
     log_step "Loading configuration from $CONFIG_FILE"
     source "$CONFIG_FILE"
