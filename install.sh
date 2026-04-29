@@ -175,6 +175,40 @@ die() {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# Visible exit — runs on ANY non-zero exit (die, set -u trip, SIGINT, broken
+# pipe, etc.) so the user is never left guessing what happened. Without this,
+# a die on a noisy pacstrap failure scrolls off-screen and the user just sees
+# their live ISO prompt come back.
+# ---------------------------------------------------------------------------
+_on_exit() {
+    local rc=$?
+    trap - EXIT      # don't recurse if anything below errors
+    [[ $rc -eq 0 ]] && return 0
+
+    printf '\n%b\n' "${RED:-}═══════════════════════════════════════════════════════════════${NC:-}"
+    printf '%b\n'   "${RED:-}  ✗ JESTERNET INSTALL ABORTED  (exit ${rc})${NC:-}"
+    printf '%b\n'   "${RED:-}═══════════════════════════════════════════════════════════════${NC:-}"
+
+    if [[ -n "${INSTALL_LOG:-}" && -f "${INSTALL_LOG}" ]]; then
+        printf '\n%b\n' "${YELLOW:-}Last 40 lines of ${INSTALL_LOG}:${NC:-}"
+        tail -n 40 "$INSTALL_LOG" 2>/dev/null
+    else
+        printf '\n%b\n' "${YELLOW:-}(no install log was created)${NC:-}"
+    fi
+
+    printf '\n%b\n' "${YELLOW:-}To investigate:${NC:-}"
+    printf '  less %s\n' "${INSTALL_LOG:-/var/log/jesternet-install.log}"
+    printf '  lsblk                            # see partitions / mount state\n'
+    printf '  mount | grep /mnt                # see anything stuck mounted\n'
+    printf '  bash %s    # retry — prepare_clean_state recovers prior state\n' "${0:-install.sh}"
+
+    printf '\n%b' "${YELLOW:-}Press Enter to drop to the live ISO shell...${NC:-}"
+    read -r < /dev/tty 2>/dev/null || true
+    exit "$rc"
+}
+trap _on_exit EXIT
+
 # Run a named function, tolerating its failures. Used for the install phases
 # that are nice-to-have (theme, dev-stacks, AUR helper, enterprise config).
 try_func() {
@@ -662,11 +696,30 @@ prepare_clean_state() {
     # leak the new install's data into the ISO's tmpfs.
     log_step "Preparing clean state (recovering from any prior install attempt)..."
 
+    # Step out of /mnt if we somehow ended up there — protects us from the
+    # fuser sweep below (otherwise we'd kill ourselves).
+    cd / 2>/dev/null || true
+
     # 1. Kill any process holding files in /mnt — usually leftover bash from
-    #    a half-run chroot that was Ctrl-C'd.
-    if command -v fuser &>/dev/null; then
-        fuser -km /mnt 2>/dev/null || true
-        sleep 1
+    #    a half-run chroot that was Ctrl-C'd. Critically, exclude this script
+    #    AND its parent shell from the kill list. fuser -km is otherwise
+    #    indiscriminate: on re-runs it'll happily SIGKILL the live install.sh
+    #    if anything in the process tree has fds open under /mnt, with no
+    #    error message — the user just sees a black flash and lands back at
+    #    the live ISO shell. That's the failure mode this guard prevents.
+    if command -v fuser &>/dev/null && mountpoint -q /mnt 2>/dev/null; then
+        local me=$$ parent=$PPID
+        local victims
+        # fuser -m prints PIDs space-separated on stderr; flatten and filter.
+        victims="$(fuser -m /mnt 2>&1 | tr -cd '0-9 \n' | tr ' \n' '\n\n' \
+            | awk -v me="$me" -v p="$parent" 'NF && $1!=me && $1!=p' \
+            | sort -u)"
+        if [ -n "$victims" ]; then
+            log_step "Killing leftover /mnt processes: $(echo $victims | tr '\n' ' ')"
+            # shellcheck disable=SC2086
+            kill -9 $victims 2>/dev/null || true
+            sleep 1
+        fi
     fi
 
     # 2. Recursively unmount /mnt. -R handles nested mounts (boot/efi, etc.),
