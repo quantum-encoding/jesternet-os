@@ -844,18 +844,27 @@ partition_disk() {
 install_base_system() {
     log_step "Installing base system (this may take a while)..."
 
-    # Tune the LIVE ISO's pacman.conf for parallel downloads + aria2 retries.
-    # This speeds up pacstrap and gives us aria2's resilient retry behaviour
-    # for free on the very first download cycle.
-    log_step "Tuning live-ISO pacman.conf for parallel/aria2 downloads..."
+    # Tune the LIVE ISO's pacman.conf for parallel downloads.
+    #
+    # We DO NOT install an aria2c XferCommand here — even though aria2 supports
+    # 8 connections per file, pacman ignores ParallelDownloads when XferCommand
+    # is set and falls back to fetching one package at a time. So aria2c gives
+    # up parallel-across-files for parallel-within-one-file, which is usually
+    # slower and (more importantly) silent on a stalled mirror: aria2c -q
+    # produces no output for minutes while pacman shows only "retrieving
+    # packages..." with no progress. Native ParallelDownloads + libcurl shows
+    # a live progress line per file and cancels stalled connections quickly.
+    log_step "Tuning live-ISO pacman.conf (ParallelDownloads = 8)..."
     if ! grep -q '^ParallelDownloads' /etc/pacman.conf; then
         sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 8/' /etc/pacman.conf
         grep -q '^ParallelDownloads' /etc/pacman.conf || \
             echo 'ParallelDownloads = 8' >> /etc/pacman.conf
     fi
-    # aria2 may not be installed on the ISO itself; only set XferCommand if present.
-    if command -v aria2c &>/dev/null && ! grep -q '^XferCommand' /etc/pacman.conf; then
-        sed -i '/^\[options\]/a XferCommand = /usr/bin/aria2c --allow-overwrite=true --continue=true --file-allocation=none --log-level=error --max-tries=4 --max-connection-per-server=8 --max-file-not-found=4 --min-split-size=5M --no-conf --remote-time=true --summary-interval=60 --timeout=10 --retry-wait=1 --console-log-level=error --download-result=hide --quiet -d / -o %o %u' /etc/pacman.conf
+    # If a previous run installed an aria2c XferCommand, strip it — leaving
+    # it active would silence pacstrap from this point forward.
+    if grep -q '^XferCommand.*aria2c' /etc/pacman.conf; then
+        log_step "Removing legacy aria2c XferCommand from /etc/pacman.conf"
+        sed -i '/^XferCommand.*aria2c/d' /etc/pacman.conf
     fi
     log_success "Pacman tuned"
 
@@ -937,14 +946,18 @@ MIRRORS
     # `pacman -Syu` (run inside chroot during config) from yanking `linux` out
     # from under a running ISO that has older kernel headers — the exact failure
     # path that bricks NVIDIA/DKMS installs mid-flight.
-    log_step "Tuning target pacman.conf (parallel + aria2 + kernel pin)..."
+    log_step "Tuning target pacman.conf (parallel + kernel pin)..."
     if ! grep -q '^ParallelDownloads' /mnt/etc/pacman.conf; then
         sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 8/' /mnt/etc/pacman.conf
         grep -q '^ParallelDownloads' /mnt/etc/pacman.conf || \
             echo 'ParallelDownloads = 8' >> /mnt/etc/pacman.conf
     fi
-    if ! grep -q '^XferCommand' /mnt/etc/pacman.conf; then
-        sed -i '/^\[options\]/a XferCommand = /usr/bin/aria2c --allow-overwrite=true --continue=true --file-allocation=none --log-level=error --max-tries=4 --max-connection-per-server=8 --max-file-not-found=4 --min-split-size=5M --no-conf --remote-time=true --summary-interval=60 --timeout=10 --retry-wait=1 --console-log-level=error --download-result=hide --quiet -d / -o %o %u' /mnt/etc/pacman.conf
+    # Same rationale as the live-ISO tuning: do NOT install an aria2c
+    # XferCommand. It silences pacman's per-file progress and forces serial
+    # downloads (XferCommand suppresses ParallelDownloads). Strip any legacy
+    # one a previous run left behind.
+    if grep -q '^XferCommand.*aria2c' /mnt/etc/pacman.conf; then
+        sed -i '/^XferCommand.*aria2c/d' /mnt/etc/pacman.conf
     fi
     if ! grep -q '^IgnorePkg.*linux' /mnt/etc/pacman.conf; then
         sed -i '/^\[options\]/a IgnorePkg   = linux linux-headers linux-firmware linux-lts linux-lts-headers' /mnt/etc/pacman.conf
