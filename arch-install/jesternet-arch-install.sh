@@ -355,9 +355,23 @@ preflight_checks() {
     fi
     log_success "Arch live environment detected"
 
+    # Verify the toolchain we'll need for partitioning + recovery is present.
+    # Arch live ISO ships all of these — if any are missing, we're not where
+    # we think we are.
+    local missing=()
+    for tool in parted wipefs partprobe pacstrap genfstab udevadm mountpoint swapon swapoff; do
+        command -v "$tool" &>/dev/null || missing+=("$tool")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        log_error "Missing required tools in live environment: ${missing[*]}"
+        log_error "This usually means we're not running on an Arch live ISO."
+        exit 1
+    fi
+    log_success "Required tools present"
+
     # Sync time
     log_step "Syncing system clock..."
-    timedatectl set-ntp true
+    timedatectl set-ntp true 2>/dev/null || log_warning "NTP sync failed (non-fatal)"
     log_success "System clock synced"
 
     # Update pacman keyring (critical for older ISOs)
@@ -618,6 +632,60 @@ select_dev_stacks() {
 }
 
 # ============================================================================
+# Recovery: clean state from any prior failed install
+# ============================================================================
+
+prepare_clean_state() {
+    # Idempotent reset of /mnt, swap, dm-crypt, and zombie chroot processes.
+    # Safe to call on a fresh boot (everything is already clean — silent no-ops).
+    # Without this, a re-run after a crashed install hits "device busy" on
+    # umount, "swap already in use" on swapon, or stale mounts under /mnt that
+    # leak the new install's data into the ISO's tmpfs.
+    log_step "Preparing clean state (recovering from any prior install attempt)..."
+
+    # 1. Kill any process holding files in /mnt — usually leftover bash from
+    #    a half-run chroot that was Ctrl-C'd.
+    if command -v fuser &>/dev/null; then
+        fuser -km /mnt 2>/dev/null || true
+        sleep 1
+    fi
+
+    # 2. Recursively unmount /mnt. -R handles nested mounts (boot/efi, etc.),
+    #    -l (lazy) covers the case where something's still holding it.
+    if mountpoint -q /mnt 2>/dev/null; then
+        log_step "Found existing mount under /mnt — unmounting"
+        umount -R /mnt 2>/dev/null || umount -lR /mnt 2>/dev/null || true
+    fi
+
+    # 3. Disable any active swap. If we partitioned the target disk last
+    #    attempt and swapon'd it, parted will fail this time without this.
+    if [ -n "$(swapon --show=NAME --noheadings 2>/dev/null)" ]; then
+        log_step "Active swap detected — disabling"
+        swapoff -a 2>/dev/null || true
+    fi
+
+    # 4. Close any LUKS volumes that might be lingering from a prior crypto
+    #    setup attempt (defensive — we don't open any in this script today,
+    #    but future versions might, and dm leftovers block wipefs).
+    if command -v cryptsetup &>/dev/null && command -v dmsetup &>/dev/null; then
+        for dm in $(dmsetup ls --target crypt 2>/dev/null | awk '{print $1}'); do
+            [ -z "$dm" ] || [ "$dm" = "No" ] && continue
+            log_step "Closing crypto volume: $dm"
+            cryptsetup close "$dm" 2>/dev/null || true
+        done
+    fi
+
+    # 5. Tell the kernel to drop any cached partition tables on the target
+    #    disk. Without this, parted complains that the device is in use.
+    if [ -n "${TARGET_DISK:-}" ] && [ -b "$TARGET_DISK" ]; then
+        partprobe "$TARGET_DISK" 2>/dev/null || true
+        udevadm settle 2>/dev/null || true
+    fi
+
+    log_success "Clean state ready"
+}
+
+# ============================================================================
 # Partitioning
 # ============================================================================
 
@@ -632,8 +700,14 @@ partition_disk() {
         PART_PREFIX="${TARGET_DISK}"
     fi
 
-    # Wipe existing partitions
-    wipefs -a "$TARGET_DISK"
+    # Wipe existing partitions. This is the second line of defence after
+    # prepare_clean_state — if any signature lingers (LVM, RAID, old GPT),
+    # wipefs scrubs it so parted starts on a clean disk.
+    wipefs -a "$TARGET_DISK" 2>/dev/null || true
+    # Also zap the partition table itself in case wipefs missed something.
+    if command -v sgdisk &>/dev/null; then
+        sgdisk --zap-all "$TARGET_DISK" 2>/dev/null || true
+    fi
 
     # Create GPT partition table
     parted -s "$TARGET_DISK" mklabel gpt
@@ -1419,6 +1493,7 @@ main() {
 
     # Phases 1-3 are FATAL on failure — without them you have no bootable system.
     # Each calls `die` internally if it can't continue.
+    prepare_clean_state    # recover from any prior failed run before touching disk
     partition_disk
     install_base_system
     configure_system
