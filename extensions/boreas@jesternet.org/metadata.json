@@ -1,7 +1,10 @@
 {
   "name": "Boreas Fan Control",
-  "description": "Sovereign thermal control for Acer Nitro AN515-57",
+  "description": "Sovereign thermal & performance control — Quick Settings tile that talks to the boreas + prometheus system daemons. Hardware-aware (Acer Nitro / Lenovo ThinkPad).",
   "uuid": "boreas@jesternet.org",
-  "shell-version": ["49"],
-  "version": 1
+  "shell-version": [
+    "49",
+    "50"
+  ],
+  "version": 2
 }
