@@ -49,8 +49,7 @@ install_office() {
 
     # LibreOffice Fresh (latest features)
     sudo pacman -S --needed --noconfirm \
-        libreoffice-fresh \
-        libreoffice-fresh-en-us
+        libreoffice-fresh
 
     # PDF tools
     sudo pacman -S --needed --noconfirm \
@@ -103,7 +102,7 @@ install_graphics() {
         optipng \
         pngquant \
         jpegoptim \
-        webp
+        libwebp
 
     # RAW image support
     sudo pacman -S --needed --noconfirm \
@@ -207,7 +206,7 @@ install_utilities() {
 
     # Archive tools
     sudo pacman -S --needed --noconfirm \
-        p7zip \
+        7zip \
         unrar \
         unzip \
         zip \
@@ -268,8 +267,7 @@ install_codecs() {
         gst-plugins-good \
         gst-plugins-bad \
         gst-plugins-ugly \
-        gst-libav \
-        gstreamer-vaapi
+        gst-libav
 
     log_success "Codecs installed"
 }

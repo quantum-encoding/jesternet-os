@@ -161,7 +161,7 @@ install_system_tools() {
         git \
         make \
         gcc \
-        pkg-config
+        pkgconf
 
     log_success "System tools installed"
 }

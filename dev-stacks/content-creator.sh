@@ -232,7 +232,7 @@ install_webcam_tools() {
     sudo pacman -S --needed --noconfirm \
         v4l-utils \
         guvcview \
-        cheese
+        snapshot
 
     log_success "Webcam tools installed"
 }

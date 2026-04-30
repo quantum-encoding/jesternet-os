@@ -1407,26 +1407,75 @@ install_dev_stacks() {
 
     log_step "Installing development stacks..."
 
-    # Create installation script
-    cat > /mnt/home/${USERNAME}/install-dev-stacks.sh << STACKS_EOF
+    # Create installation script. Each stack runs through a wrapper that
+    # captures failures and reports them at the end, so a single broken stack
+    # doesn't silently skip the rest (which used to happen because each stack
+    # has `set -e` but this wrapper does not).
+    cat > /mnt/home/${USERNAME}/install-dev-stacks.sh << 'STACKS_EOF'
 #!/bin/bash
-# Run this after first login to install development stacks
+# Run this after first login to install development stacks.
+# Failures in individual stacks are caught and reported at the end
+# so a single broken stack doesn't silently skip the rest.
+
 cd ~/JesterNet
+
+FAILED=()
+SUCCEEDED=()
+
+run_stack() {
+    local script="$1"
+    echo
+    echo "════════════════════════════════════════════════════════════════"
+    echo " Running: $script"
+    echo "════════════════════════════════════════════════════════════════"
+    if bash "$script"; then
+        SUCCEEDED+=("$script")
+    else
+        FAILED+=("$script (exit $?)")
+    fi
+}
 
 STACKS_EOF
 
     for stack in $DEV_STACKS; do
         case "$stack" in
-            tauri)   echo "./dev-stacks/tauri-stack.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            android) echo "./dev-stacks/android-stack.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            go)      echo "./dev-stacks/go-stack.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            python)  echo "./dev-stacks/python-stack.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            zig)     echo "./dev-stacks/zig-stack.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            web)     echo "./dev-stacks/web-stack.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            office)  echo "./dev-stacks/office-multimedia.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
-            creator) echo "./dev-stacks/content-creator.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            tauri)   echo "run_stack ./dev-stacks/tauri-stack.sh"      >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            android) echo "run_stack ./dev-stacks/android-stack.sh"    >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            go)      echo "run_stack ./dev-stacks/go-stack.sh"         >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            python)  echo "run_stack ./dev-stacks/python-stack.sh"     >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            zig)     echo "run_stack ./dev-stacks/zig-stack.sh"        >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            web)     echo "run_stack ./dev-stacks/web-stack.sh"        >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            office)  echo "run_stack ./dev-stacks/office-multimedia.sh" >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
+            creator) echo "run_stack ./dev-stacks/content-creator.sh"  >> /mnt/home/${USERNAME}/install-dev-stacks.sh ;;
         esac
     done
+
+    cat >> /mnt/home/${USERNAME}/install-dev-stacks.sh << 'STACKS_EOF'
+
+echo
+echo "════════════════════════════════════════════════════════════════"
+echo " Dev Stack Installation Summary"
+echo "════════════════════════════════════════════════════════════════"
+echo
+if [[ ${#SUCCEEDED[@]} -gt 0 ]]; then
+    echo "Succeeded (${#SUCCEEDED[@]}):"
+    for s in "${SUCCEEDED[@]}"; do
+        echo "  ✓ $s"
+    done
+fi
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+    echo
+    echo "Failed (${#FAILED[@]}):"
+    for f in "${FAILED[@]}"; do
+        echo "  ✗ $f"
+    done
+    echo
+    echo "Investigate failures above. Re-run individual scripts manually after fixing."
+    exit 1
+fi
+echo
+echo "All selected dev stacks installed successfully."
+STACKS_EOF
 
     chmod +x "/mnt/home/${USERNAME}/install-dev-stacks.sh"
     timeout 30 arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/install-dev-stacks.sh" \
