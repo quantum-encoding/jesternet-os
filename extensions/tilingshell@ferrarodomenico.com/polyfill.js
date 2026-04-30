@@ -1,12 +1,10 @@
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 
-function openPrefs() {
+function openPrefs(ext) {
   if (Extension.openPrefs) {
     Extension.openPrefs();
   } else {
-    Extension.lookupByUUID(
-      "tilingshell@ferrarodomenico.com"
-    )?.openPreferences();
+    ext.openPreferences();
   }
 }
 export {

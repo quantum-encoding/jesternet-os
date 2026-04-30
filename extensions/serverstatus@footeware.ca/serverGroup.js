@@ -27,7 +27,7 @@ export class ServerGroup {
         const title = settings?.name ?? "";
         this.expander.set_title(title);
         const subtitle = settings
-            ? `${settings.isGet ? "GET" : "HEAD"} : ${settings.url} @ ${settings.frequency}s`
+            ? `${settings.isGet ? "GET" : "HEAD"} ${settings.url} @ ${settings.frequency}s with ${settings.timeout}s timeout ${settings.notifies ? "🔔" : ""}`
             : "";
         this.expander.set_subtitle(subtitle);
         this.serverSettingGroup.add(this.expander);
@@ -58,10 +58,19 @@ export class ServerGroup {
         this.frequencyRow = Adw.SpinRow.new_with_range(10, 300, 10);
         this.frequencyRow.set_value(settings?.frequency ?? 120);
         this.frequencyRow.set_title("Frequency (secs.)");
-        this.frequencyRow.connect("input", () => {
+        this.frequencyRow.connect("notify::value", () => {
             this.update();
         });
         this.expander.add_row(this.frequencyRow);
+
+        // timeout spinner
+        this.timeoutRow = Adw.SpinRow.new_with_range(1, 300, 1);
+        this.timeoutRow.set_value(settings?.timeout ?? 10);
+        this.timeoutRow.set_title("Timeout (secs.)");
+        this.timeoutRow.connect("notify::value", () => {
+            this.update();
+        });
+        this.expander.add_row(this.timeoutRow);
 
         // 'use GET' switch
         this.useGetSwitchRow = new Adw.SwitchRow({
@@ -73,6 +82,17 @@ export class ServerGroup {
             this.update();
         });
         this.expander.add_row(this.useGetSwitchRow);
+
+        // 'use notifications' switch
+        this.useNotificationsSwitchRow = new Adw.SwitchRow({
+            title: "Notify when down",
+        });
+        const notifies = settings?.notifies ?? false;
+        this.useNotificationsSwitchRow.set_active(notifies);
+        this.useNotificationsSwitchRow.connect("notify::active", () => {
+            this.update();
+        });
+        this.expander.add_row(this.useNotificationsSwitchRow);
 
         // move up/down row
         const moveRow = new Adw.ActionRow({
@@ -176,8 +196,9 @@ export class ServerGroup {
     getSubtitle() {
         const url = this.urlRow.text;
         const freq = this.frequencyRow.text;
+        const timeout = this.timeoutRow.text;
         const httpMethod = this.useGetSwitchRow.active ? "GET" : "HEAD";
-        return httpMethod + " : " + url + " @ " + freq + "s";
+        return `${httpMethod} ${url} @ ${freq}s with ${timeout}s timeout ${this.useNotificationsSwitchRow.active ? "🔔" : ""}`;
     }
 
     /**
@@ -284,8 +305,10 @@ export class ServerGroup {
         this.settings = new ServerSetting(
             this.nameRow.text,
             this.urlRow.text,
-            this.frequencyRow.value,
+            this.frequencyRow.text,
+            this.timeoutRow.text,
             this.useGetSwitchRow.active,
+            this.useNotificationsSwitchRow.active,
         );
     }
 

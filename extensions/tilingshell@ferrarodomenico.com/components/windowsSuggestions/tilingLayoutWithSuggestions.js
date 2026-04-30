@@ -1,7 +1,7 @@
 import { registerGObjectClass } from "../../utils/gjs.js";
 import { Clutter } from "../../gi/ext.js";
 import Layout from "../layout/Layout.js";
-import { buildRectangle } from "../../utils/ui.js";
+import { buildRectangle, isPointInsideRect } from "../../utils/ui.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import GlobalState from "../../utils/globalState.js";
 import SuggestedWindowPreview from "./suggestedWindowPreview.js";
@@ -10,7 +10,8 @@ import LayoutWidget from "../../components/layout/LayoutWidget.js";
 import SignalHandling from "../../utils/signalHandling.js";
 import SuggestionsTilePreview from "../../components/windowsSuggestions/suggestionsTilePreview.js";
 import TilingShellWindowManager from "../../components/windowManager/tilingShellWindowManager.js";
-import { unmaximizeWindow } from "../../utils/gnomesupport.js";
+import { getEventCoords, unmaximizeWindow } from "../../utils/gnomesupport.js";
+import TouchEventHelper from "../../utils/touch.js";
 const ANIMATION_SPEED = 200;
 const MASONRY_LAYOUT_ROW_HEIGHT = 0.31;
 const _TilingLayoutWithSuggestions = class _TilingLayoutWithSuggestions extends LayoutWidget {
@@ -18,6 +19,7 @@ const _TilingLayoutWithSuggestions = class _TilingLayoutWithSuggestions extends 
   _lastTiledWindow;
   _showing;
   _oldPreviews;
+  _touchHelper;
   constructor(innerGaps, outerGaps, containerRect, scalingFactor) {
     super({
       containerRect,
@@ -34,6 +36,7 @@ const _TilingLayoutWithSuggestions = class _TilingLayoutWithSuggestions extends 
     this._showing = false;
     this._oldPreviews = [];
     this.connect("destroy", () => this._signals.disconnect());
+    this._touchHelper = new TouchEventHelper();
   }
 
   buildTile(parent, rect, gaps, tile) {
@@ -54,7 +57,18 @@ const _TilingLayoutWithSuggestions = class _TilingLayoutWithSuggestions extends 
     this._recursivelyShowPopup(nontiledWindows, monitorIndex);
     this._signals.disconnect();
     this._signals.connect(this, "key-focus-out", () => this.close());
-    this._signals.connect(this, "button-press-event", () => {
+    this._signals.connect(
+      this,
+      "touch-event",
+      (_, event) => {
+        if (event.type() === Clutter.EventType.TOUCH_END) {
+          this.close();
+          return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+      }
+    );
+    this._signals.connect(this, "button-release-event", () => {
       this.close();
     });
     this._signals.connect(
@@ -138,49 +152,35 @@ const _TilingLayoutWithSuggestions = class _TilingLayoutWithSuggestions extends 
           onStopped: () => winActor.set_pivot_point(0, 0)
         });
       });
-      winClone.connect("button-press-event", () => {
-        this._lastTiledWindow = nonTiledWin;
-        if (nonTiledWin.maximizedHorizontally || nonTiledWin.maximizedVertically)
-          unmaximizeWindow(nonTiledWin);
-        if (nonTiledWin.is_fullscreen())
-          nonTiledWin.unmake_fullscreen();
-        if (nonTiledWin.minimized) nonTiledWin.unminimize();
-        const winRect = nonTiledWin.get_frame_rect();
-        nonTiledWin.originalSize = winRect.copy();
-        const cl = winClone.get_window_clone() ?? winClone;
-        const [x, y] = cl.get_transformed_position();
-        const allocation = cl.get_allocation_box();
-        TilingShellWindowManager.easeMoveWindow({
-          window: nonTiledWin,
-          from: buildRectangle({
-            x,
-            y,
-            width: allocation.x2 - allocation.x1,
-            height: allocation.y2 - allocation.y1
-          }),
-          to: buildRectangle({
-            x: preview.innerX,
-            y: preview.innerY,
-            width: preview.innerWidth,
-            height: preview.innerHeight
-          }),
-          duration: ANIMATION_SPEED * 1.8,
-          monitorIndex
-        });
-        nonTiledWin.assignedTile = new Tile({
-          ...preview.tile
-        });
-        winClone.opacity = 0;
-        const removed = this._previews.splice(
-          this._previews.indexOf(preview),
-          1
-        );
-        this._oldPreviews.push(...removed);
-        nontiledWindows.splice(nontiledWindows.indexOf(nonTiledWin), 1);
-        preview.close(true);
-        this._recursivelyShowPopup(nontiledWindows, monitorIndex);
-        return Clutter.EVENT_STOP;
-      });
+      winClone.connect(
+        "button-release-event",
+        (act, event) => {
+          return this._onSuggestionPress(
+            nonTiledWin,
+            winClone,
+            event,
+            nontiledWindows,
+            monitorIndex,
+            preview
+          );
+        }
+      );
+      winClone.connect(
+        "touch-event",
+        (act, event) => {
+          if (event.type() === Clutter.EventType.TOUCH_END) {
+            return this._onSuggestionPress(
+              nonTiledWin,
+              winClone,
+              event,
+              nontiledWindows,
+              monitorIndex,
+              preview
+            );
+          }
+          return Clutter.EVENT_STOP;
+        }
+      );
       return winClone;
     });
     preview.addWindows(
@@ -228,6 +228,53 @@ const _TilingLayoutWithSuggestions = class _TilingLayoutWithSuggestions extends 
         this._previews.forEach((prev) => prev.open());
       }
     });
+  }
+
+  _onSuggestionPress(nonTiledWin, suggestedWin, event, nontiledWindows, monitorIndex, preview) {
+    const [eventX, eventY] = getEventCoords(event);
+    const cl = suggestedWin.get_window_clone() ?? suggestedWin;
+    const [x, y] = cl.get_transformed_position();
+    const allocation = cl.get_allocation_box();
+    const cloneRect = buildRectangle({
+      x,
+      y,
+      width: allocation.x2 - allocation.x1,
+      height: allocation.y2 - allocation.y1
+    });
+    if (!isPointInsideRect({ x: eventX, y: eventY }, cloneRect))
+      return Clutter.EVENT_STOP;
+    this._lastTiledWindow = nonTiledWin;
+    if (nonTiledWin.maximizedHorizontally || nonTiledWin.maximizedVertically)
+      unmaximizeWindow(nonTiledWin);
+    if (nonTiledWin.is_fullscreen()) nonTiledWin.unmake_fullscreen();
+    if (nonTiledWin.minimized) nonTiledWin.unminimize();
+    const winRect = nonTiledWin.get_frame_rect();
+    nonTiledWin.originalSize = winRect.copy();
+    TilingShellWindowManager.easeMoveWindow({
+      window: nonTiledWin,
+      from: cloneRect,
+      to: buildRectangle({
+        x: preview.innerX,
+        y: preview.innerY,
+        width: preview.innerWidth,
+        height: preview.innerHeight
+      }),
+      duration: ANIMATION_SPEED * 1.8,
+      monitorIndex
+    });
+    nonTiledWin.assignedTile = new Tile({
+      ...preview.tile
+    });
+    suggestedWin.opacity = 0;
+    const removed = this._previews.splice(
+      this._previews.indexOf(preview),
+      1
+    );
+    this._oldPreviews.push(...removed);
+    nontiledWindows.splice(nontiledWindows.indexOf(nonTiledWin), 1);
+    preview.close(true);
+    this._recursivelyShowPopup(nontiledWindows, monitorIndex);
+    return Clutter.EVENT_STOP;
   }
 };
 registerGObjectClass(_TilingLayoutWithSuggestions);

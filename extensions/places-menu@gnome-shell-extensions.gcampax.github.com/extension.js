@@ -74,7 +74,7 @@ class PlacesMenu extends PanelMenu.Button {
     constructor() {
         super(0.5, _('Places'));
 
-        let label = new St.Label({
+        const label = new St.Label({
             text: _('Places'),
             y_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
@@ -86,11 +86,11 @@ class PlacesMenu extends PanelMenu.Button {
         this._sections = { };
 
         for (let i = 0; i < SECTIONS.length; i++) {
-            let id = SECTIONS[i];
+            const id = SECTIONS[i];
             this._sections[id] = new PopupMenu.PopupMenuSection();
-            this.placesManager.connect(`${id}-updated`, () => {
-                this._redisplay(id);
-            });
+            this.placesManager.connectObject(
+                `${id}-updated`, () => this._redisplay(id),
+                this);
 
             this._create(id);
             this.menu.addMenuItem(this._sections[id]);
@@ -99,6 +99,7 @@ class PlacesMenu extends PanelMenu.Button {
     }
 
     _onDestroy() {
+        this.placesManager.disconnectObject(this);
         this.placesManager.destroy();
 
         super._onDestroy();
@@ -110,7 +111,7 @@ class PlacesMenu extends PanelMenu.Button {
     }
 
     _create(id) {
-        let places = this.placesManager.get(id);
+        const places = this.placesManager.get(id);
 
         for (let i = 0; i < places.length; i++)
             this._sections[id].addMenuItem(new PlaceMenuItem(places[i]));
@@ -131,6 +132,6 @@ export default class PlacesMenuExtension extends Extension {
 
     disable() {
         this._indicator.destroy();
-        delete this._indicator;
+        this._indicator = null;
     }
 }

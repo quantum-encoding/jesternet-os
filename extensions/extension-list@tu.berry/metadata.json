@@ -5,7 +5,8 @@
   "name": "Extension List",
   "settings-schema": "org.gnome.shell.extensions.extension-list",
   "shell-version": [
-    "49"
+    "49",
+    "50"
   ],
   "url": "https://github.com/tuberry/extension-list",
   "uuid": "extension-list@tu.berry",

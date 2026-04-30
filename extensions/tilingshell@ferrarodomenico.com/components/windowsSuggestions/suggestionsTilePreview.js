@@ -3,12 +3,14 @@ import { GObject, St, Clutter } from "../../gi/ext.js";
 import TilePreview from "../tilepreview/tilePreview.js";
 import { buildBlurEffect, widgetOrientation } from "../../utils/gnomesupport.js";
 import MasonryLayoutManager from "./masonryLayoutManager.js";
+import TouchEventHelper from "../../utils/touch.js";
 const MASONRY_LAYOUT_SPACING = 32;
 const SCROLLBARS_SHOW_ANIM_DURATION = 100;
 const _SuggestionsTilePreview = class _SuggestionsTilePreview extends TilePreview {
   _blur;
   _container;
   _scrollView;
+  _touchHelper;
   constructor(params) {
     super(params);
     this._blur = false;
@@ -54,6 +56,7 @@ const _SuggestionsTilePreview = class _SuggestionsTilePreview extends TilePrevie
       this._scrollView.get_hscroll_bar().opacity = 0;
       this._scrollView.get_vscroll_bar().opacity = 0;
     }
+    this._touchHelper = new TouchEventHelper();
   }
 
   set blur(value) {
@@ -78,6 +81,7 @@ const _SuggestionsTilePreview = class _SuggestionsTilePreview extends TilePrevie
     effect.set_enabled(this._blur);
     this.add_effect(effect);
     this.add_style_class_name("selection-tile-preview");
+    this._setupTouchScrolling();
   }
 
   _recolor() {
@@ -177,6 +181,15 @@ const _SuggestionsTilePreview = class _SuggestionsTilePreview extends TilePrevie
 
   removeAllWindows() {
     this._container.destroy_all_children();
+  }
+
+  _setupTouchScrolling() {
+    this.connect("touch-event", (_, event) => {
+      return this._touchHelper.convertPanToScroll(
+        event,
+        this._scrollView
+      );
+    });
   }
 };
 registerGObjectClass(_SuggestionsTilePreview, {

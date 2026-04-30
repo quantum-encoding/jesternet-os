@@ -45,6 +45,7 @@ import OverriddenAltTab from "./components/altTab/overriddenAltTab.js";
 import { LayoutSwitcherPopup } from "./components/layoutSwitcher/layoutSwitcher.js";
 import { unmaximizeWindow } from "./utils/gnomesupport.js";
 import * as Config from "resource:///org/gnome/shell/misc/config.js";
+import { RaiseTogetherManager } from "./components/raiseTogether/raiseTogetherManager.js";
 const debug = logger("extension");
 
 class TilingShellExtension extends Extension {
@@ -56,6 +57,7 @@ class TilingShellExtension extends Extension {
   _keybindings;
   _resizingManager;
   _windowBorderManager;
+  _raiseTogetherManager;
   constructor(metadata) {
     super(metadata);
     this._signals = null;
@@ -66,18 +68,26 @@ class TilingShellExtension extends Extension {
     this._keybindings = null;
     this._resizingManager = null;
     this._windowBorderManager = null;
+    this._raiseTogetherManager = null;
   }
 
   createIndicator() {
     this._indicator = new Indicator(this.path, this.uuid);
     this._indicator.enableScaling = !this._fractionalScalingEnabled;
     this._indicator.enable();
+    this._signals?.connect(this._indicator, "open-preferences", () => this.openPreferences());
   }
 
   _validateSettings() {
     if (Settings.LAST_VERSION_NAME_INSTALLED === "17.0") {
       debug("apply compatibility changes");
       Settings.WINDOW_USE_CUSTOM_BORDER_COLOR = Settings.ENABLE_WINDOW_BORDER;
+    }
+    if (Settings.LAST_VERSION_NAME_INSTALLED !== "17.3") {
+      debug("apply compatibility changes for 17.3");
+      Settings.gioSetting.set_strv(Settings.SETTING_CYCLE_LAYOUTS_BACKWARD, [
+        `<Shift>${Settings.gioSetting.get_strv(Settings.SETTING_CYCLE_LAYOUTS)}`
+      ]);
     }
   }
 
@@ -132,6 +142,8 @@ class TilingShellExtension extends Extension {
       !this._fractionalScalingEnabled
     );
     this._windowBorderManager.enable();
+    this._raiseTogetherManager = new RaiseTogetherManager();
+    this._raiseTogetherManager.enable();
     this.createIndicator();
     if (this._dbus) this._dbus.disable();
     this._dbus = new DBus();
@@ -263,12 +275,14 @@ class TilingShellExtension extends Extension {
       this._signals.connect(
         this._keybindings,
         "cycle-layouts",
-        (_, dp, action, mask) => {
+        (kb, dp, currentAction, mask) => {
+          const backwardAction = kb.cycleLayoutsBackwardAction;
           const switcher = new LayoutSwitcherPopup(
-            action,
+            kb.cycleLayoutsAction,
+            backwardAction,
             !this._fractionalScalingEnabled
           );
-          if (!switcher.show(false, "", mask)) switcher.destroy();
+          if (!switcher.show(currentAction === backwardAction, "", mask)) switcher.destroy();
         }
       );
     }
@@ -562,6 +576,8 @@ class TilingShellExtension extends Extension {
     this._resizingManager = null;
     this._windowBorderManager?.destroy();
     this._windowBorderManager = null;
+    this._raiseTogetherManager?.destroy();
+    this._raiseTogetherManager = null;
     this._dbus?.disable();
     this._dbus = null;
     this._fractionalScalingEnabled = false;

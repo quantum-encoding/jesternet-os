@@ -6,9 +6,10 @@
   "settings-schema": "org.gnome.shell.extensions.docker",
   "shell-version": [
     "48",
-    "49"
+    "49",
+    "50"
   ],
   "url": "https://gitlab.com/stickman_0x00/gnome_shell_extension_docker",
   "uuid": "docker@stickman_0x00.com",
-  "version": 43
+  "version": 44
 }

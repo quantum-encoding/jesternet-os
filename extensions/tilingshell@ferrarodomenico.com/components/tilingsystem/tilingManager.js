@@ -1,4 +1,4 @@
-import { Meta, GLib } from "../../gi/ext.js";
+import { Clutter, Meta, GLib } from "../../gi/ext.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import { logger } from "../../utils/logger.js";
 import {
@@ -15,7 +15,7 @@ import {
 import TilingLayout from "../../components/tilingsystem/tilingLayout.js";
 import SnapAssist from "../snapassist/snapAssist.js";
 import SelectionTilePreview from "../tilepreview/selectionTilePreview.js";
-import { ActivationKey } from "../../settings/settings.js";
+import { ActivationKey, EdgeTilingMode } from "../../settings/settings.js";
 import Settings from "../../settings/settings.js";
 import SignalHandling from "../../utils/signalHandling.js";
 import Layout from "../layout/Layout.js";
@@ -88,6 +88,7 @@ class TilingManager {
       `Work area for monitor ${this._monitor.index}: ${this._workArea.x} ${this._workArea.y} ${this._workArea.width}x${this._workArea.height}`
     );
     this._edgeTilingManager = new EdgeTilingManager(this._workArea);
+    this._edgeTilingManager.monitorIndex = this._monitor.index;
     const monitorScalingFactor = this._enableScaling ? getMonitorScalingFactor(monitor.index) : void 0;
     this._workspaceTilingLayout = /* @__PURE__ */ new Map();
     for (let i = 0; i < global.workspaceManager.get_n_workspaces(); i++) {
@@ -312,7 +313,7 @@ class TilingManager {
     } else if (window.get_monitor() === this._monitor.index) {
       const enlargeFactor = Math.max(
         64,
-        // if the gaps are all 0 we choose 8 instead
+        // if the gaps are all 0 we choose 64 instead
         tilingLayout.innerGaps.right,
         tilingLayout.innerGaps.left,
         tilingLayout.innerGaps.right,
@@ -399,6 +400,24 @@ class TilingManager {
         TouchPointer.get().onTouchEvent(x, y);
       }
     );
+    this._signals.connect(
+      global.stage,
+      "captured-event",
+      (_source, event) => {
+        const device = event.get_source_device();
+        if (!device) return;
+        const deviceType = device.get_device_type();
+        if (deviceType === Clutter.InputDeviceType.TABLET_DEVICE || deviceType === Clutter.InputDeviceType.PEN_DEVICE) {
+          const eventType = event.type();
+          if (eventType === Clutter.EventType.MOTION) {
+            const [x, y] = event.get_coords();
+            TouchPointer.get().onTouchEvent(x, y);
+            const seat = Clutter.get_default_backend().get_default_seat();
+            seat.warp_pointer(x, y);
+          }
+        }
+      }
+    );
     if (Settings.ENABLE_BLUR_SNAP_ASSISTANT || Settings.ENABLE_BLUR_SELECTED_TILEPREVIEW) {
       this._signals.connect(window, "position-changed", () => {
         if (Settings.ENABLE_BLUR_SELECTED_TILEPREVIEW) {
@@ -420,19 +439,19 @@ class TilingManager {
 
   _activationKeyStatus(modifier, key) {
     if (key === ActivationKey.NONE) return true;
-    let val = 2;
+    let mask = Clutter.ModifierType.CONTROL_MASK;
     switch (key) {
       case ActivationKey.CTRL:
-        val = 2;
+        mask = Clutter.ModifierType.CONTROL_MASK;
         break;
       case ActivationKey.ALT:
-        val = 3;
+        mask = Clutter.ModifierType.MOD1_MASK;
         break;
       case ActivationKey.SUPER:
-        val = 6;
+        mask = Clutter.ModifierType.SUPER_MASK;
         break;
     }
-    return (modifier & 1 << val) !== 0;
+    return (modifier & mask) === mask;
   }
 
   _onMovingWindow(window, grabOp) {
@@ -443,6 +462,7 @@ class TilingManager {
     const currentWs = window.get_workspace();
     const tilingLayout = this._workspaceTilingLayout.get(currentWs);
     if (!tilingLayout) return GLib.SOURCE_REMOVE;
+    this._edgeTilingManager.workspaceIndex = currentWs.index();
     if (!window.allows_resize() || !window.allows_move() || !this._isPointerInsideThisMonitor(window)) {
       tilingLayout.close();
       this._selectedTilesPreview.close(true);
@@ -614,43 +634,24 @@ class TilingManager {
       ...TileUtils.build_tile(selectedTilesRect, this._workArea)
     });
     this._easeWindowRect(window, desiredWindowRect);
+    if (wasSnapAssistingLayout && Settings.SNAP_ASSIST_SYNC_LAYOUT) {
+      GlobalState.get().setSelectedLayoutOfMonitor(
+        wasSnapAssistingLayout.id,
+        this._monitor.index
+      );
+    }
     if (!tilingLayout || !canShowTilingSuggestions) return;
-    const layout = wasEdgeTiling ? new Layout(
+    const layout = wasEdgeTiling ? Settings.EDGE_TILING_MODE === EdgeTilingMode.DEFAULT ? new Layout(
       [
-        // top-left
-        new Tile({
-          x: 0,
-          y: 0,
-          width: 0.5,
-          height: 0.5,
-          groups: []
-        }),
-        // top-right
-        new Tile({
-          x: 0.5,
-          y: 0,
-          width: 0.5,
-          height: 0.5,
-          groups: []
-        }),
-        // bottom-left
-        new Tile({
-          x: 0,
-          y: 0.5,
-          width: 0.5,
-          height: 0.5,
-          groups: []
-        }),
-        // bottom-right
-        new Tile({
-          x: 0.5,
-          y: 0.5,
-          width: 0.5,
-          height: 0.5,
-          groups: []
-        })
+        new Tile({ x: 0, y: 0, height: 0.5, width: 0.5, groups: [] }),
+        new Tile({ x: 0.5, y: 0, height: 0.5, width: 0.5, groups: [] }),
+        new Tile({ x: 0, y: 0.5, height: 0.5, width: 0.5, groups: [] }),
+        new Tile({ x: 0.5, y: 0.5, height: 0.5, width: 0.5, groups: [] })
       ],
-      "edge-tiling-layout"
+      "quarters"
+    ) : GlobalState.get().getSelectedLayoutOfMonitor(
+      this._monitor.index,
+      window.get_workspace().index()
     ) : wasSnapAssistingLayout ? wasSnapAssistingLayout : GlobalState.get().getSelectedLayoutOfMonitor(
       this._monitor.index,
       window.get_workspace().index()

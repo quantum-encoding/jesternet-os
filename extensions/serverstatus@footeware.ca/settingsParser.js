@@ -25,8 +25,12 @@ export class SettingsParser {
                 savedSetting["frequency"] !== undefined
                     ? Number(savedSetting["frequency"])
                     : 120;
+            const timeout =
+                savedSetting["timeout"] !== undefined
+                    ? Number(savedSetting["timeout"])
+                    : 10;
 
-            // support old key
+            // migrate old key
             let isGet = false;
             if (savedSetting["is_get"] !== undefined) {
                 isGet = savedSetting["is_get"] === "true";
@@ -34,7 +38,9 @@ export class SettingsParser {
                 isGet = savedSetting["isGet"] === "true";
             }
 
-            const setting = new ServerSetting(name, url, frequency, isGet);
+            const notifies = savedSetting["notifies"] !== undefined ? savedSetting["notifies"] === "true" : false; // defaults to false
+
+            const setting = new ServerSetting(name, url, frequency, timeout, isGet, notifies);
             settings.push(setting);
         }
         return settings;

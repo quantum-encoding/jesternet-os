@@ -21,6 +21,8 @@ var FocusSwitchDirection = /* @__PURE__ */ ((FocusSwitchDirection2) => {
 })(FocusSwitchDirection || {});
 const _KeyBindings = class _KeyBindings extends GObject.Object {
   _signals;
+  _cycleLayoutsAction;
+  _cycleLayoutsBackwardAction;
   constructor(extensionSettings) {
     super();
     this._signals = new SignalHandling();
@@ -33,6 +35,14 @@ const _KeyBindings = class _KeyBindings extends GObject.Object {
     );
     if (Settings.ENABLE_MOVE_KEYBINDINGS)
       this._setupKeyBindings(extensionSettings);
+  }
+
+  get cycleLayoutsAction() {
+    return this._cycleLayoutsAction;
+  }
+
+  get cycleLayoutsBackwardAction() {
+    return this._cycleLayoutsBackwardAction;
   }
 
   _setupKeyBindings(extensionSettings) {
@@ -181,16 +191,29 @@ const _KeyBindings = class _KeyBindings extends GObject.Object {
         this.emit("highlight-current-window", display);
       }
     );
-    const action = Main.wm.addKeybinding(
+    this._cycleLayoutsAction = Main.wm.addKeybinding(
       Settings.SETTING_CYCLE_LAYOUTS,
       extensionSettings,
       Meta.KeyBindingFlags.NONE,
       Shell.ActionMode.NORMAL,
-      (display, _, event, binding) => {
-        const mask = event.get_mask ? event.get_mask() : binding.get_mask();
-        this.emit("cycle-layouts", display, action, mask);
+      (display, _unused, event, binding) => {
+        this._onCycleLayouts(display, event, binding, this._cycleLayoutsAction);
       }
     );
+    this._cycleLayoutsBackwardAction = Main.wm.addKeybinding(
+      Settings.SETTING_CYCLE_LAYOUTS_BACKWARD,
+      extensionSettings,
+      Meta.KeyBindingFlags.IS_REVERSED,
+      Shell.ActionMode.NORMAL,
+      (display, _unused, event, binding) => {
+        this._onCycleLayouts(display, event, binding, this._cycleLayoutsBackwardAction);
+      }
+    );
+  }
+
+  _onCycleLayouts(display, event, binding, action) {
+    const mask = event.get_mask ? event.get_mask() : binding.get_mask();
+    this.emit("cycle-layouts", display, action, mask);
   }
 
   _overrideNatives(extensionSettings) {
@@ -278,6 +301,7 @@ const _KeyBindings = class _KeyBindings extends GObject.Object {
     Main.wm.removeKeybinding(Settings.SETTING_FOCUS_WINDOW_PREV);
     Main.wm.removeKeybinding(Settings.SETTING_HIGHLIGHT_CURRENT_WINDOW);
     Main.wm.removeKeybinding(Settings.SETTING_CYCLE_LAYOUTS);
+    Main.wm.removeKeybinding(Settings.SETTING_CYCLE_LAYOUTS_BACKWARD);
   }
 
   _restoreNatives() {
@@ -344,7 +368,7 @@ registerGObjectClass(_KeyBindings, {
         GObject.TYPE_INT,
         GObject.TYPE_INT
       ]
-      // Meta.Display, number, number
+      // Meta.Display, action number, mask number
     }
   }
 });

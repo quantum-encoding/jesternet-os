@@ -41,7 +41,7 @@ export default class Menu
 		this._connections.push(this._settings.connect('changed::logo', this._logo_change.bind(this)));
 
 		// Label to display total of running containers
-		this._label = new St.Label();
+		this._label = new St.Label({ style_class: 'docker-counter-label' });
 		boxLayout.add_child(this._label);
 		this._dockerCounter = new DockerCounter(this._label);
 

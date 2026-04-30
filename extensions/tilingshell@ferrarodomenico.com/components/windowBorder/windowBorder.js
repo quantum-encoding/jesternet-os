@@ -21,14 +21,14 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
   _borderRadiusValue;
   _timeout;
   _delayedSmartBorderRadius;
-  _borderWidth;
+  _scaledBorderWidth;
   constructor(win, enableScaling) {
     super({
       style_class: "window-border"
     });
     this._signals = new SignalHandling();
     this._bindings = [];
-    this._borderWidth = 1;
+    this._scaledBorderWidth = 1;
     this._window = win;
     this._windowMonitor = win.get_monitor();
     this._enableScaling = enableScaling;
@@ -74,15 +74,6 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
         // if winActor changes, this will change
       )
     );
-    const winRect = this._window.get_frame_rect();
-    this.set_position(
-      winRect.x - this._borderWidth,
-      winRect.y - this._borderWidth
-    );
-    this.set_size(
-      winRect.width + 2 * this._borderWidth,
-      winRect.height + 2 * this._borderWidth
-    );
     if (Settings.ENABLE_SMART_WINDOW_BORDER_RADIUS) {
       const cached_radius = this._window.__ts_cached_radius;
       if (cached_radius) {
@@ -93,12 +84,22 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
       }
     }
     this.updateStyle();
+    const winRect = this._window.get_frame_rect();
+    this.set_position(
+      winRect.x - this._scaledBorderWidth,
+      winRect.y - this._scaledBorderWidth
+    );
+    this.set_size(
+      winRect.width + 2 * this._scaledBorderWidth,
+      winRect.height + 2 * this._scaledBorderWidth
+    );
     const isMaximized = this._window.maximizedVertically && this._window.maximizedHorizontally;
     if (this._window.is_fullscreen() || isMaximized || this._window.minimized || !winActor.visible)
       this.close();
     else this.open();
     this._signals.connect(global.display, "restacked", () => {
       this.queue_repaint();
+      global.windowGroup.set_child_above_sibling(this, null);
     });
     this._signals.connect(this._window, "position-changed", () => {
       if (this._window.maximizedVertically || this._window.maximizedHorizontally || this._window.minimized || this._window.is_fullscreen()) {
@@ -112,8 +113,8 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
       }
       const rect = this._window.get_frame_rect();
       this.set_position(
-        rect.x - this._borderWidth,
-        rect.y - this._borderWidth
+        rect.x - this._scaledBorderWidth,
+        rect.y - this._scaledBorderWidth
       );
       if (this._windowMonitor !== win.get_monitor()) {
         this._windowMonitor = win.get_monitor();
@@ -133,8 +134,8 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
       }
       const rect = this._window.get_frame_rect();
       this.set_size(
-        rect.width + 2 * this._borderWidth,
-        rect.height + 2 * this._borderWidth
+        rect.width + 2 * this._scaledBorderWidth,
+        rect.height + 2 * this._scaledBorderWidth
       );
       if (this._windowMonitor !== win.get_monitor()) {
         this._windowMonitor = win.get_monitor();
@@ -229,21 +230,13 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
     enableScalingFactorSupport(this, monitorScalingFactor);
     const [alreadyScaled, scalingFactor] = getScalingFactorOf(this);
     const borderWidth = (alreadyScaled ? 1 : scalingFactor) * (Settings.WINDOW_BORDER_WIDTH / (alreadyScaled ? scalingFactor : 1));
+    this._scaledBorderWidth = scalingFactor * Settings.WINDOW_BORDER_WIDTH;
     const borderColor = Settings.WINDOW_USE_CUSTOM_BORDER_COLOR ? Settings.WINDOW_BORDER_COLOR : "-st-accent-color";
     const radius = this._borderRadiusValue.map((val) => {
       const valWithBorder = val === 0 ? val : val + borderWidth;
       return (alreadyScaled ? 1 : scalingFactor) * (valWithBorder / (alreadyScaled ? scalingFactor : 1));
     });
     const scalingFactorSupportString = monitorScalingFactor ? `${getScalingFactorSupportString(monitorScalingFactor)};` : "";
-    if (this._borderWidth !== borderWidth) {
-      const diff = this._borderWidth - borderWidth;
-      this._borderWidth = borderWidth;
-      this.set_size(
-        this.get_width() - 2 * diff,
-        this.get_height() - 2 * diff
-      );
-      this.set_position(this.get_x() + diff, this.get_y() + diff);
-    }
     this.set_style(
       `border-color: ${borderColor}; border-radius: ${radius[St.Corner.TOPLEFT]}px ${radius[St.Corner.TOPRIGHT]}px ${radius[St.Corner.BOTTOMRIGHT]}px ${radius[St.Corner.BOTTOMLEFT]}px; ${scalingFactorSupportString}`
     );
@@ -254,7 +247,7 @@ const _WindowBorder = class _WindowBorder extends St.DrawingArea {
     const themeNode = this.get_theme_node();
     const [width, height] = this.get_surface_size();
     if (!width || !height) return;
-    const borderWidth = this._borderWidth;
+    const borderWidth = this._scaledBorderWidth;
     const borderColor = themeNode.get_border_color(null);
     const radius = [0, 0, 0, 0];
     radius[St.Corner.TOPLEFT] = themeNode.get_border_radius(St.Corner.TOPLEFT);

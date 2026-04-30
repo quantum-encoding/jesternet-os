@@ -199,20 +199,47 @@ const _EditorDialog = class _EditorDialog extends ModalDialog.ModalDialog {
     const gaps = Settings.get_inner_gaps(1).top > 0 ? this._gapsSize : 0;
     this._layoutsBoxLayout.destroy_all_children();
     params.layouts.forEach((lay, btnInd) => {
-      const box2 = new St.BoxLayout({
+      const layoutBox = new St.BoxLayout({
         xAlign: Clutter.ActorAlign.CENTER,
         styleClass: "layout-button-container",
         ...widgetOrientation(true)
       });
-      this._layoutsBoxLayout.add_child(box2);
+      this._layoutsBoxLayout.add_child(layoutBox);
       const btn = new LayoutButton(
-        box2,
+        layoutBox,
         lay,
         gaps,
         this._layoutHeight,
         this._layoutWidth
       );
+      const moveAndDeleteButtonsBox = new St.BoxLayout({
+        xAlign: Clutter.ActorAlign.CENTER,
+        //styleClass: 'layout-button-container',
+        ...widgetOrientation(false)
+      });
+      layoutBox.add_child(moveAndDeleteButtonsBox);
       if (params.layouts.length > 1) {
+        if (btnInd >= 1) {
+          const moveLeftBtn = new St.Button({
+            xExpand: false,
+            xAlign: Clutter.ActorAlign.CENTER,
+            styleClass: "message-list-clear-button icon-button button delete-layout-button"
+          });
+          moveLeftBtn.child = new St.Icon({
+            gicon: Gio.icon_new_for_string(
+              `${params.path}/icons/chevron-left-symbolic.svg`
+            ),
+            iconSize: 16
+          });
+          moveLeftBtn.connect("clicked", () => {
+            params.onReorderLayout(btnInd, btnInd - 1);
+            this._drawLayouts({
+              ...params,
+              layouts: GlobalState.get().layouts
+            });
+          });
+          moveAndDeleteButtonsBox.add_child(moveLeftBtn);
+        }
         const deleteBtn = new St.Button({
           xExpand: false,
           xAlign: Clutter.ActorAlign.CENTER,
@@ -231,7 +258,28 @@ const _EditorDialog = class _EditorDialog extends ModalDialog.ModalDialog {
             layouts: GlobalState.get().layouts
           });
         });
-        box2.add_child(deleteBtn);
+        moveAndDeleteButtonsBox.add_child(deleteBtn);
+        if (btnInd + 1 < params.layouts.length) {
+          const moveRightBtn = new St.Button({
+            xExpand: false,
+            xAlign: Clutter.ActorAlign.CENTER,
+            styleClass: "message-list-clear-button icon-button button delete-layout-button"
+          });
+          moveRightBtn.child = new St.Icon({
+            gicon: Gio.icon_new_for_string(
+              `${params.path}/icons/chevron-right-symbolic.svg`
+            ),
+            iconSize: 16
+          });
+          moveRightBtn.connect("clicked", () => {
+            params.onReorderLayout(btnInd, btnInd + 1);
+            this._drawLayouts({
+              ...params,
+              layouts: GlobalState.get().layouts
+            });
+          });
+          moveAndDeleteButtonsBox.add_child(moveRightBtn);
+        }
       }
       btn.connect("clicked", () => {
         params.onSelectLayout(btnInd, lay);

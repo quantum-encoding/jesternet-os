@@ -26,3 +26,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 .cache/
+
+# auto-installed by chronos-hook git wrapper
+.claude/

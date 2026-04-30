@@ -64,9 +64,11 @@ const _LayoutSwitcherPopup = class _LayoutSwitcherPopup extends SwitcherPopup.Sw
   
   
   _action;
-  constructor(action, enableScaling) {
+  _backwardAction;
+  constructor(action, backwardAction, enableScaling) {
     super(GlobalState.get().layouts);
     this._action = action;
+    this._backwardAction = backwardAction;
     const monitorScalingFactor = enableScaling ? getMonitorScalingFactor(this._getCurrentMonitorIndex()) : void 0;
     this._switcherList = new LayoutSwitcherList(
       this._items,
@@ -90,8 +92,9 @@ const _LayoutSwitcherPopup = class _LayoutSwitcherPopup extends SwitcherPopup.Sw
   _keyPressHandler(keysym, action) {
     if (keysym === Clutter.KEY_Left) this._select(this._previous());
     else if (keysym === Clutter.KEY_Right) this._select(this._next());
-    else if (action !== this._action) return Clutter.EVENT_PROPAGATE;
-    else this._select(this._next());
+    else if (action === this._action) this._select(this._next());
+    else if (action === this._backwardAction) this._select(this._previous());
+    else return Clutter.EVENT_PROPAGATE;
     return Clutter.EVENT_STOP;
   }
 

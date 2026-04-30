@@ -209,6 +209,13 @@ const _GlobalState = class _GlobalState extends GObject.Object {
     this.layouts = this._layouts;
   }
 
+  swapLayouts(first, second) {
+    const tmp = this._layouts[first];
+    this._layouts[first] = this._layouts[second];
+    this._layouts[second] = tmp;
+    this.layouts = this._layouts;
+  }
+
   set layouts(layouts) {
     this._layouts = layouts;
     Settings.save_layouts_json(layouts);

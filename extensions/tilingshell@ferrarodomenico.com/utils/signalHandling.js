@@ -7,6 +7,7 @@ class SignalHandling {
   connect(obj, key, fun) {
     const signalId = obj.connect(key, fun);
     this._signalsIds[key] = { id: signalId, obj };
+    return signalId;
   }
 
   disconnect(obj) {

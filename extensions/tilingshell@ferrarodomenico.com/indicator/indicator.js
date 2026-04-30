@@ -59,13 +59,13 @@ const _Indicator = class _Indicator extends PanelMenu.Button {
     this._enableScaling = value;
     if (this._currentMenu && this._state === 1 /* DEFAULT */) {
       this._currentMenu.destroy();
-      this._currentMenu = new DefaultMenu(this, this._enableScaling);
+      this._currentMenu = new DefaultMenu(this, this._enableScaling, this._openPreferences.bind(this));
     }
   }
 
   enable() {
     this.menu.removeAll();
-    this._currentMenu = new DefaultMenu(this, this._enableScaling);
+    this._currentMenu = new DefaultMenu(this, this._enableScaling, this._openPreferences.bind(this));
   }
 
   selectLayoutOnClick(monitorIndex, layoutToSelectId) {
@@ -138,6 +138,9 @@ const _Indicator = class _Indicator extends PanelMenu.Button {
         this._editorDialog?.destroy();
         this._editorDialog = null;
       },
+      onReorderLayout: (fromIndex, toIndex) => {
+        GlobalState.get().swapLayouts(fromIndex, toIndex);
+      },
       path: this._path,
       legend: showLegend
     });
@@ -170,13 +173,17 @@ const _Indicator = class _Indicator extends PanelMenu.Button {
     this._setState(1 /* DEFAULT */);
   }
 
+  _openPreferences() {
+    this.emit("open-preferences");
+  }
+
   _setState(newState) {
     if (this._state === newState) return;
     this._state = newState;
     this._currentMenu?.destroy();
     switch (newState) {
       case 1 /* DEFAULT */:
-        this._currentMenu = new DefaultMenu(this, this._enableScaling);
+        this._currentMenu = new DefaultMenu(this, this._enableScaling, this._openPreferences.bind(this));
         if (!Settings.SHOW_INDICATOR) this.hide();
         if (this._keyPressEvent) {
           global.stage.disconnect(this._keyPressEvent);
@@ -212,7 +219,14 @@ const _Indicator = class _Indicator extends PanelMenu.Button {
     this.menu.removeAll();
   }
 };
-registerGObjectClass(_Indicator);
+registerGObjectClass(_Indicator, {
+  Signals: {
+    "open-preferences": {
+      param_types: []
+    }
+  },
+  GTypeName: "Indicator"
+});
 let Indicator = _Indicator;
 export {
   Indicator as default
