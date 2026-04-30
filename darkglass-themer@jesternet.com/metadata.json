@@ -7,9 +7,10 @@
     "46",
     "47",
     "48",
-    "49"
+    "49",
+    "50"
   ],
   "url": "https://github.com/jesternet/darkglass-themer",
-  "version": 1,
+  "version": 2,
   "settings-schema": "org.gnome.shell.extensions.darkglass-themer"
 }
