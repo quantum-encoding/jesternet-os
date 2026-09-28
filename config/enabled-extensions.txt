@@ -1,0 +1,16 @@
+# Extensions enabled by install-theme.sh (one UUID per line).
+# Bundled extensions not listed here are installed but left off.
+blur-my-shell@aunetx
+boreas@jesternet.org
+burn-my-windows@schneegans.github.com
+claude-shepherd@quantum-forge
+darkglass-themer@jesternet.com
+docker@stickman_0x00.com
+extension-list@tu.berry
+IP-Finder@linxgem33.com
+just-perfection-desktop@just-perfection
+log-sentinel-v2@quantum-encoding.ltd
+places-menu@gnome-shell-extensions.gcampax.github.com
+tilingshell@ferrarodomenico.com
+user-theme@gnome-shell-extensions.gcampax.github.com
+Vitals@CoreCoding.com

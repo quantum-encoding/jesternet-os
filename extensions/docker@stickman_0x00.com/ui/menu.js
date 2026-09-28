@@ -2,6 +2,7 @@ import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
+import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import { QuickSettingsMenu, QuickSettingsItem } from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -14,6 +15,8 @@ import DockerAPI from '../lib/docker.js';
 import DockerManager from '../lib/dockerManager.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import DockerCounter from '../lib/dockerCounter.js';
+
+const [major, _minor] = Config.PACKAGE_VERSION.split('.').map(s => Number(s));
 
 export default class Menu
 	extends PanelMenu.Button {
@@ -28,7 +31,6 @@ export default class Menu
 		this._console = DockerManager.console;
 		this._timerID = null;
 		this._items = {};
-		this._connections = [];
 
 		// Add icon
 		const boxLayout = new St.BoxLayout();
@@ -38,13 +40,16 @@ export default class Menu
 		this._gicon = Gio.icon_new_for_string(DockerManager.getDefault().path + `/resources/docker_${DockerManager.settings.get_string('logo')}.png`);
 		this._icon = new St.Icon({ gicon: this._gicon, icon_size: '24' });
 		boxLayout.add_child(this._icon);
-		this._connections.push(this._settings.connect('changed::logo', this._logo_change.bind(this)));
+		this._settings.connectObject('changed::logo', this._logo_change.bind(this), this);
 
 		// Label to display total of running containers
 		this._label = new St.Label({ style_class: 'docker-counter-label' });
 		boxLayout.add_child(this._label);
 		this._dockerCounter = new DockerCounter(this._label);
 
+		if (major >= 50) {
+			this.clear_actions();
+		}
 		this.connect('button-press-event', async () => {
 			await this._show();
 			this.menu.open();
@@ -52,7 +57,7 @@ export default class Menu
 	}
 
 	destroy() {
-		this._connections.forEach(connection => this._settings.disconnect(connection));
+		this._settings.disconnectObject(this);
 		this._dockerCounter.destroy();
 
 		super.destroy();

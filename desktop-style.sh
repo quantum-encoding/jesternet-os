@@ -101,64 +101,119 @@ install_extension_from_url() {
 
     local ext_dir="$HOME/.local/share/gnome-shell/extensions/$uuid"
 
-    if [ -d "$ext_dir" ]; then
+    if [ -f "$ext_dir/metadata.json" ]; then
         log_success "$name already installed"
         return 0
     fi
 
-    mkdir -p "$ext_dir"
+    local temp_zip
+    temp_zip=$(mktemp --suffix=.zip)
 
-    # Download extension
-    local temp_zip="/tmp/${uuid}.zip"
-
-    if command -v aria2c &> /dev/null; then
-        aria2c -x 16 -o "$temp_zip" "$url" 2>/dev/null || curl -sL -o "$temp_zip" "$url"
-    else
-        curl -sL -o "$temp_zip" "$url"
+    # -f makes HTTP errors fail instead of saving an error page as the zip
+    if ! curl -fsSL -o "$temp_zip" "$url"; then
+        log_error "Failed to download $name"
+        rm -f "$temp_zip"
+        return 1
     fi
 
-    # Extract
-    unzip -q "$temp_zip" -d "$ext_dir" 2>/dev/null || {
+    mkdir -p "$ext_dir"
+    if ! unzip -qo "$temp_zip" -d "$ext_dir"; then
         log_error "Failed to extract $name"
+        # Don't leave an empty dir behind, or the next run reports "already installed"
+        rm -rf "$ext_dir" "$temp_zip"
         return 1
-    }
+    fi
 
     rm -f "$temp_zip"
     log_success "$name installed"
 }
 
+# Resolve the extensions.gnome.org download URL for the running GNOME Shell
+# major version, so we never pin a zip that only supports an older shell.
+ego_download_url() {
+    local pk="$1"
+    local shell_major
+    shell_major=$(gnome-shell --version | grep -oE '[0-9]+' | head -1)
+
+    local path
+    path=$(curl -fsSL "https://extensions.gnome.org/extension-info/?pk=${pk}&shell_version=${shell_major}" \
+        | grep -oE '"download_url": *"[^"]+"' | cut -d'"' -f4) || return 1
+
+    [ -n "$path" ] || return 1
+    echo "https://extensions.gnome.org${path}"
+}
+
+# Install from the Arch repos if packaged, otherwise from extensions.gnome.org.
+install_extension() {
+    local name="$1"
+    local uuid="$2"
+    local pkg="$3"
+    local pk="$4"
+
+    if pacman -Qi "$pkg" &> /dev/null; then
+        log_success "$name already installed via pacman"
+        return 0
+    fi
+
+    if pacman -Si "$pkg" &> /dev/null; then
+        sudo pacman -S --needed --noconfirm "$pkg" && return 0
+        log_warning "pacman install of $pkg failed, falling back to extensions.gnome.org"
+    fi
+
+    local url
+    if ! url=$(ego_download_url "$pk"); then
+        log_error "$name has no release for GNOME Shell $(gnome-shell --version | grep -oE '[0-9]+' | head -1)"
+        echo -e "  ${CYAN}Visit:${NC} https://extensions.gnome.org/extension/${pk}/"
+        return 1
+    fi
+
+    install_extension_from_url "$name" "$uuid" "$url"
+}
+
+# `gnome-extensions enable` only works on extensions the running shell has
+# already loaded. On Wayland a freshly unpacked extension isn't loaded until
+# the next login, so fall back to editing enabled-extensions directly.
+enable_extension() {
+    local uuid="$1"
+
+    gnome-extensions enable "$uuid" 2>/dev/null && return 0
+
+    local current
+    current=$(gsettings get org.gnome.shell enabled-extensions)
+    [[ "$current" == *"'$uuid'"* ]] && return 0
+
+    if [[ "$current" == "@as []" || "$current" == "[]" ]]; then
+        gsettings set org.gnome.shell enabled-extensions "['$uuid']"
+    else
+        gsettings set org.gnome.shell enabled-extensions "${current%]}, '$uuid']"
+    fi
+}
+
+disable_extension() {
+    local uuid="$1"
+
+    gnome-extensions disable "$uuid" 2>/dev/null || true
+
+    local current updated
+    current=$(gsettings get org.gnome.shell enabled-extensions)
+    [[ "$current" == *"'$uuid'"* ]] || return 0
+
+    updated=$(echo "$current" | sed -e "s/'$uuid', //; s/, '$uuid'//; s/'$uuid'//")
+    [[ "$updated" == "[]" ]] && updated="@as []"
+    gsettings set org.gnome.shell enabled-extensions "$updated"
+}
+
 install_dash_to_dock() {
     log_step "Setting up Dash to Dock (macOS-style)..."
-
-    # Check if available in repos first
-    if pacman -Qi gnome-shell-extension-dash-to-dock &> /dev/null; then
-        log_success "Dash to Dock already installed via pacman"
-    else
-        # Try to install from repos
-        sudo pacman -S --needed --noconfirm gnome-shell-extension-dash-to-dock 2>/dev/null || {
-            log_warning "Not in repos, please install from extensions.gnome.org"
-            echo ""
-            echo -e "  ${CYAN}Visit:${NC} https://extensions.gnome.org/extension/307/dash-to-dock/"
-            echo ""
-        }
-    fi
+    # Not packaged in the Arch repos, so this normally installs from EGO
+    install_extension "Dash to Dock" "dash-to-dock@micxgx.gmail.com" \
+        "gnome-shell-extension-dash-to-dock" 307
 }
 
 install_dash_to_panel() {
     log_step "Setting up Dash to Panel (Windows-style)..."
-
-    # Check if available in repos first
-    if pacman -Qi gnome-shell-extension-dash-to-panel &> /dev/null; then
-        log_success "Dash to Panel already installed via pacman"
-    else
-        # Try to install from repos
-        sudo pacman -S --needed --noconfirm gnome-shell-extension-dash-to-panel 2>/dev/null || {
-            log_warning "Not in repos, please install from extensions.gnome.org"
-            echo ""
-            echo -e "  ${CYAN}Visit:${NC} https://extensions.gnome.org/extension/1160/dash-to-panel/"
-            echo ""
-        }
-    fi
+    install_extension "Dash to Panel" "dash-to-panel@jderose9.github.com" \
+        "gnome-shell-extension-dash-to-panel" 1160
 }
 
 # ============================================================================
@@ -169,10 +224,10 @@ configure_dock_style() {
     log_step "Configuring Dock (macOS) style..."
 
     # Disable Dash to Panel if enabled
-    gnome-extensions disable dash-to-panel@jderose9.github.com 2>/dev/null || true
+    disable_extension dash-to-panel@jderose9.github.com
 
     # Enable Dash to Dock
-    gnome-extensions enable dash-to-dock@micxgx.gmail.com 2>/dev/null || true
+    enable_extension dash-to-dock@micxgx.gmail.com
 
     # Configure Dash to Dock settings
     dconf write /org/gnome/shell/extensions/dash-to-dock/dock-position "'BOTTOM'"
@@ -199,10 +254,10 @@ configure_taskbar_style() {
     log_step "Configuring Taskbar (Windows) style..."
 
     # Disable Dash to Dock if enabled
-    gnome-extensions disable dash-to-dock@micxgx.gmail.com 2>/dev/null || true
+    disable_extension dash-to-dock@micxgx.gmail.com
 
     # Enable Dash to Panel
-    gnome-extensions enable dash-to-panel@jderose9.github.com 2>/dev/null || true
+    enable_extension dash-to-panel@jderose9.github.com
 
     # Configure Dash to Panel settings
     dconf write /org/gnome/shell/extensions/dash-to-panel/panel-positions '{"0":"BOTTOM"}'

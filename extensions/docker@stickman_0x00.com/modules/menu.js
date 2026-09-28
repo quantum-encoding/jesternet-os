@@ -36,7 +36,6 @@ export default class Menu
 		this._settings = DockerManager.settings;
 		this._console = DockerManager.console;
 		this._timerID = null;
-		this._connections = [];
 
 		// Add icon
 		const boxLayout = new St.BoxLayout();
@@ -53,7 +52,7 @@ export default class Menu
 		boxLayout.add_child(this._label);
 		this._dockerCounter = new DockerCounter(this._label);
 
-		this._connections.push(this._settings.connect('changed::logo', this._logo_change.bind(this)));
+		this._settings.connectObject('changed::logo', this._logo_change.bind(this), this);
 
 		// For some reason since Gnome 50 its needs this to work
 		if (major >= 50) {
@@ -71,7 +70,7 @@ export default class Menu
 	}
 
 	destroy() {
-		this._connections.forEach(connection => this._settings.disconnect(connection));
+		this._settings.disconnectObject(this);
 		this._dockerCounter.destroy();
 
 		super.destroy();

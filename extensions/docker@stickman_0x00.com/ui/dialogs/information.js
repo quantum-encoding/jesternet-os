@@ -6,6 +6,8 @@ import St from 'gi://St';
 import { ModalDialog } from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
+import DockerAPI from '../../lib/docker.js';
+
 class InformationDialog extends ModalDialog {
 	static {
 		GObject.registerClass(this);
@@ -15,7 +17,7 @@ class InformationDialog extends ModalDialog {
 		super();
 
 		this._main_box = new St.BoxLayout({
-			vertical: true,
+			orientation: Clutter.Orientation.VERTICAL,
 		});
 		this.contentLayout.add_child(this._main_box);
 
@@ -37,11 +39,17 @@ class InformationDialog extends ModalDialog {
 				this.close();
 			},
 		});
+
+	}
+
+	destroy() {
+		this._main_box?.destroy();
+		this._main_box = null;
+		super.destroy();
 	}
 
 	_add_row(label, icon, func) {
 		const box = new St.BoxLayout({
-			vertical: false,
 			x_expand: true,
 		});
 		this._main_box.add_child(box);

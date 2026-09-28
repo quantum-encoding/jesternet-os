@@ -71,7 +71,11 @@ export default class DockerAPI {
 			},
 			c_logs: {
 				label: _("View logs"),
-				command: "logs --tail 1000 -f"
+				command: "logs -f"
+			},
+
+			compose_logs: {
+				label: _("View logs"),
 			},
 
 			compose_up: {
@@ -127,8 +131,32 @@ export default class DockerAPI {
 		DockerAPI._docker_commands = null;
 	}
 
+	static spawn_command_line_async(c) {
+		const exe = c.split(' ')[0];
+		if (!GLib.find_program_in_path(exe)) {
+			const msg = `"${exe}" not found. Update the Terminal setting in extension Preferences.`;
+			Main.notifyError('Docker', msg);
+			return;
+		}
+		GLib.spawn_command_line_async(c);
+	}
+
 	static get docker_commands() {
 		return DockerAPI._docker_commands;
+	}
+
+	/**
+	 * Map a container health status string to a translated display label.
+	 * @param {string|null} health
+	 * @return {string}
+	 */
+	static health_label(health) {
+		const labels = {
+			'starting': _('Starting'),
+			'healthy': _('Healthy'),
+			'unhealthy': _('Unhealthy'),
+		};
+		return health ? (labels[health] ?? health) : _('None');
 	}
 
 	/**
@@ -239,6 +267,7 @@ export default class DockerAPI {
 					id: container.Id,
 					name: container.Name.slice(1),
 					state: container.State.Status,
+					health: container.State.Health ? container.State.Health.Status : null,
 					ip: ip,
 					ip_prefix: ip_prefix,
 					gateway: gateway,
@@ -308,50 +337,57 @@ export default class DockerAPI {
 				break;
 			case this.docker_commands.c_exec:
 				c = `${Settings.get_string('terminal')} 'docker ${command.command} ${item.id} bash; read -p "Press enter to exit..."'`;
-				GLib.spawn_command_line_async(c);
+				this.spawn_command_line_async(c);
 				return;
 			case this.docker_commands.c_attach:
-				c = `${Settings.get_string('terminal')} 'docker ${command.command} ${item.id}; read -p "Press enter to exit..."'`;
-				GLib.spawn_command_line_async(c);
-				return;
 			case this.docker_commands.c_stop:
 				c = `docker ${command.command} ${Settings.get_string('stop-command-options')} ${item.id}`;
 				break;
 
 			case this.docker_commands.c_start_i:
 			case this.docker_commands.c_inspect:
-			case this.docker_commands.c_logs:
 			case this.docker_commands.i_inspect:
 			case this.docker_commands.i_run_i:
 				c = `${Settings.get_string('terminal')} 'docker ${command.command} ${item.id}; read -p "Press enter to exit..."'`;
-				GLib.spawn_command_line_async(c);
+				this.spawn_command_line_async(c);
 				return;
+
+			case this.docker_commands.c_logs: {
+				const includePrev = Settings.get_boolean('logs-include-previous');
+				const tailCount = Settings.get_int('logs-tail-length');
+				const tailFlag = includePrev ? `--tail ${tailCount}` : '--tail 0';
+				c = `${Settings.get_string('terminal')} 'docker logs ${tailFlag} -f ${item.id}; read -p "Press enter to exit..."'`;
+				this.spawn_command_line_async(c);
+				return;
+			}
+
+			case this.docker_commands.compose_logs: {
+				const includePrev = Settings.get_boolean('logs-include-previous');
+				const tailCount = Settings.get_int('logs-tail-length');
+				const tailFlag = includePrev ? `--tail ${tailCount}` : '--tail 0';
+				const composeBin = await this.docker_version() >= 26 ? 'docker compose' : 'docker-compose';
+				c = `${Settings.get_string('terminal')} '${composeBin} --project-directory "${item.compose_dir}" logs ${tailFlag} -f; read -p "Press enter to exit..."'`;
+				this.spawn_command_line_async(c);
+				return;
+			}
 
 			case this.docker_commands.compose_up:
 			case this.docker_commands.compose_stop:
 			case this.docker_commands.compose_rm:
-				if (GLib.chdir(item.compose_dir) !== 0) {
-					return;
-				}
-
 				if (await this.docker_version() >= 26) {
-					c = `docker compose ${command.command}`;
+					c = `docker compose --project-directory '${item.compose_dir}' ${command.command}`;
 					break;
 				}
 
-				c = `docker-compose ${command.command}`;
+				c = `docker-compose --project-directory '${item.compose_dir}' ${command.command}`;
 				break;
 			case this.docker_commands.compose_restart:
-				if (GLib.chdir(item.compose_dir) !== 0) {
-					return;
-				}
-
 				if (await this.docker_version() >= 26) {
-					c = `docker compose down; docker compose up -d`;
+					c = `docker compose --project-directory '${item.compose_dir}' down; docker compose --project-directory '${item.compose_dir}' up -d`;
 					break;
 				}
 
-				c = `docker-compose down; docker-compose up -d`;
+				c = `docker-compose --project-directory '${item.compose_dir}' down; docker-compose --project-directory '${item.compose_dir}' up -d`;
 				break;
 
 			default:

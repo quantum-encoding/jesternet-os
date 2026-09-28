@@ -47,6 +47,14 @@ export default class DockerPreferences extends ExtensionPreferences {
 
 		group_ui.add(this._menu_type());
 		group_ui.add(this._visible_menus());
+
+		// GROUP: Show/Hide
+		const group_show = new Adw.PreferencesGroup({
+			title: _("Show/Hide")
+		});
+		general_page.add(group_show);
+
+		group_show.add(this._switch("show-health"));
 	}
 
 	_add_menu_page(window) {
@@ -100,6 +108,36 @@ export default class DockerPreferences extends ExtensionPreferences {
 
 		group.add(this._row_input("terminal"));
 		group.add(this._row_input("stop-command-options"));
+
+		const group_logs = new Adw.PreferencesGroup({
+			title: _("Logs")
+		});
+		technical_page.add(group_logs);
+
+		group_logs.add(this._switch("logs-include-previous"));
+		group_logs.add(this._logs_tail_length());
+	}
+
+	_logs_tail_length() {
+		const row = new Adw.ActionRow({
+			title: this._settings.settings_schema.get_key("logs-tail-length").get_summary(),
+			subtitle: this._settings.settings_schema.get_key("logs-tail-length").get_description(),
+		});
+
+		const spin = Gtk.SpinButton.new_with_range(0, 100000, 50);
+		spin.set_valign(Gtk.Align.CENTER);
+
+		this._settings.bind(
+			"logs-tail-length",
+			spin,
+			"value",
+			Gio.SettingsBindFlags.DEFAULT
+		);
+
+		row.add_suffix(spin);
+		row.set_activatable_widget(spin);
+
+		return row;
 	}
 
 	_logo() {

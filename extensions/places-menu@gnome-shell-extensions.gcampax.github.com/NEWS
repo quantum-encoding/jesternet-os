@@ -1,3 +1,28 @@
+50.4
+====
+* window-list: Fix reappearing after unfullscreening [Jing; !469]
+
+Contributors:
+  Jing Wang
+
+Translators:
+  Jean-Marc TISSIERES [fr]
+
+50.3
+====
+* auto-move-windows: Make workspace cleanup more robust [Christian; !455]
+* window-list: Only perform allowed window actions [Florian; !462]
+
+Contributors:
+  Christian Lauinger, Florian Müllner
+
+50.2
+====
+* Include project version in metadata [Florian; !451]
+
+Contributors:
+  Florian Müllner
+
 50.1
 ====
 * Misc. cleanups and bug fixes [Florian; !449]

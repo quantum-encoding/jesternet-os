@@ -1,12 +1,14 @@
-"use strict";
+'use strict';
 
-import Adw from "gi://Adw";
-import Gio from "gi://Gio";
-import GLib from "gi://GLib";
-import Gtk from "gi://Gtk";
-import { ExtensionPreferences } from "resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js";
-import { ServerGroup } from "./serverGroup.js";
-import { SettingsParser } from "./settingsParser.js";
+import Adw from 'gi://Adw';
+import Gio from 'gi://Gio';
+import Gtk from 'gi://Gtk';
+
+import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+
+import {DragDropSupport} from './dragDropSupport.js';
+import {ServerGroup} from './serverGroup.js';
+import {SettingsParser} from './settingsParser.js';
 
 /**
  * The main preferences class that creates server groups and saves to gsettings.
@@ -24,13 +26,51 @@ export default class ServerStatusPreferences extends ExtensionPreferences {
         this.serverGroups = [];
 
         // destroy on close
-        window.connect("close-request", () => {
-            this.serverGroups = null;
-            this.savedSettings = null;
-            this.page = null;
+        window.connect('close-request', () => {
+            this.destroy();
         });
 
         // instructions/help
+        this.page.add(this.#getHelpGroup());
+
+        // operations group
+        this.page.add(this.#getOperationsGroup());
+
+        // yourServersGroup - an Adw.PreferencesGroup that contains a list of Adw.PreferencesGroups,
+        // one per server and each itself a list of Adw.PreferencesRows
+        const yourServersGroup = new Adw.PreferencesGroup({
+            title: 'Your Servers',
+            description: 'Expand to edit. Drag and drop to reorder.',
+        });
+        this.page.add(yourServersGroup);
+
+        // add a Gtk.ListBox intermediate to facilitate drag and drop
+        // @see DragDropSupport jsdoc
+        this.gtkListBox = new Gtk.ListBox({
+            css_classes: ['boxed-list'],
+        });
+        yourServersGroup.add(this.gtkListBox);
+
+        // create one server group per discovered settings
+        const parsedSettings = SettingsParser.parseGioSettings(this.savedSettings);
+        this.#createServerGroups(parsedSettings);
+
+        // add drag & drop to the listBox
+        this.dragDropSupport = new DragDropSupport(this.gtkListBox);
+
+        // add drag & drop to the listBoxRow children of the listBox
+        for (const gtkListBoxRow of this.gtkListBox)
+            this.#addDragDropSupportToRow(gtkListBoxRow);
+
+        window.add(this.page);
+    }
+
+    /**
+     * Get the preferences group holding the legend and help instructions.
+     *
+     * @returns {Adw.PreferencesGroup}
+     */
+    #getHelpGroup() {
         const helpBox = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL,
             spacing: 10,
@@ -42,11 +82,11 @@ export default class ServerStatusPreferences extends ExtensionPreferences {
             spacing: 10,
         });
         const serverInitImage = new Gtk.Image({
-            file: this.path + "/assets/server.svg",
+            file: `${this.path}/assets/server-init.svg`,
             pixel_size: 36,
         });
         const serverInitDesc = new Gtk.Label({
-            label: "Initializing...",
+            label: 'Initializing...',
         });
         serverInitBox.append(serverInitImage);
         serverInitBox.append(serverInitDesc);
@@ -58,11 +98,11 @@ export default class ServerStatusPreferences extends ExtensionPreferences {
             spacing: 10,
         });
         const serverDownImage = new Gtk.Image({
-            file: this.path + "/assets/server-down.svg",
+            file: `${this.path}/assets/server-down.svg`,
             pixel_size: 36,
         });
         const serverDownDesc = new Gtk.Label({
-            label: "If you get a server-down indicator, try switching to GET.\nHTTP HEAD is faster but not always supported.",
+            label: 'If you get a server-down indicator with HEAD, try switching to GET.\nHTTP HEAD is faster but not always supported.',
         });
         serverDownBox.append(serverDownImage);
         serverDownBox.append(serverDownDesc);
@@ -74,11 +114,11 @@ export default class ServerStatusPreferences extends ExtensionPreferences {
             spacing: 10,
         });
         const serverBadImage = new Gtk.Image({
-            file: this.path + "/assets/server-bad.svg",
+            file: `${this.path}/assets/server-bad.svg`,
             pixel_size: 36,
         });
         const serverBadDesc = new Gtk.Label({
-            label: "If you get a server-bad indicator, there's something wrong with\nthe URL. It should be of format http[s]://host[:port][/path].",
+            label: "If you get a server-bad indicator, there's something wrong with the URL.\nIt should be of format 'http[s]://host|ip[:port][/path]' for HEAD or GET\nrequests and 'host|ip' for pings.",
         });
         serverBadBox.append(serverBadImage);
         serverBadBox.append(serverBadDesc);
@@ -90,105 +130,193 @@ export default class ServerStatusPreferences extends ExtensionPreferences {
             spacing: 10,
         });
         const serverUpImage = new Gtk.Image({
-            file: this.path + "/assets/server-up.svg",
+            file: `${this.path}/assets/server-up.svg`,
             pixel_size: 36,
         });
         const serverUpDesc = new Gtk.Label({
-            label: "The desired server-up indicator.",
+            label: 'The desired server-up indicator.',
         });
         serverUpBox.append(serverUpImage);
         serverUpBox.append(serverUpDesc);
         helpBox.append(serverUpBox);
 
         // help group
-        const helpGroup = new Adw.PreferencesGroup({});
+        const helpGroup = new Adw.PreferencesGroup({
+            title: 'Legend',
+        });
         helpGroup.add(helpBox);
-        this.page.add(helpGroup);
 
-        // operations group
-        const operationsGroup = new Adw.PreferencesGroup({});
-
-        // add
-        const addRow = new Adw.ActionRow({
-            title: "Add a new server",
-        });
-        const addButton = Gtk.Button.new_from_icon_name("list-add-symbolic");
-        addButton.set_css_classes(["suggested-action"]);
-        addRow.add_suffix(addButton);
-        addButton.connect("clicked", () => {
-            // ServerGroup is a wrapper around a PreferenceGroup, returned by getGroup()
-            const newGroup = new ServerGroup(this, null); // widgets will not be initialized but group will be expanded
-            newGroup
-                .getGroup()
-                .insert_after(operationsGroup.parent, operationsGroup); // add group to top of groups
-            this.serverGroups.unshift(newGroup); // add to beginning of array
-            this.save();
-
-            // make name field focused
-            newGroup.getNameInput().grab_focus();
-        });
-        operationsGroup.add(addRow);
-        this.page.add(operationsGroup);
-
-        // create one server group per discovered settings
-        const parsedSettings = SettingsParser.parseGioSettings(
-            this.savedSettings,
-        );
-        // add them back reversed, same as they were created, and displayed in indicator
-        const reversed = parsedSettings.toReversed();
-        for (const saved of reversed) {
-            // ServerGroup is a wrapper around a PreferenceGroup, returned by getGroup()
-            const newGroup = new ServerGroup(this, saved);
-            newGroup
-                .getGroup()
-                .insert_after(operationsGroup.parent, operationsGroup);
-            this.serverGroups.unshift(newGroup); // add to beginning of array
-        }
-
-        window.add(this.page);
+        return helpGroup;
     }
 
     /**
-     * Render the displayed groups in their new order.
+     * Get the preference group containing the 'operataions', currently just 'add server'.
+     *
+     * @returns {Adw.PreferencesGroup}
      */
-    reorder() {
-        // remove all Adw.PreferenceGroups related to ServerGroups and...
-        for (const serverGroup of this.serverGroups) {
-            // remove it from whatever position it's in
-            this.page.remove(serverGroup.getGroup());
-        }
+    #getOperationsGroup() {
+        const operationsGroup = new Adw.PreferencesGroup({});
 
-        // ...add them back in new order
-        for (const serverGroup of this.serverGroups) {
-            // add sequentially
-            this.page.add(serverGroup.getGroup());
+        // add
+        const addRow = new Adw.ButtonRow({
+            title: 'Add a New Server',
+        });
+        addRow.set_start_icon_name('list-add-symbolic');
+        addRow.add_css_class('suggested-action');
+        addRow.connect('activated', () => {
+            this.#doAdd();
+        });
+        operationsGroup.add(addRow);
+        return operationsGroup;
+    }
+
+    /**
+     * Add drag and drop functions to provided row.
+     *
+     * @param {Gtk.ListBoxRow} gtkListBoxRow
+     */
+    #addDragDropSupportToRow(gtkListBoxRow) {
+        // child of #gtkListBoxRow is an Adw.PreferencesGroup
+        const adwPreferencesGroup = gtkListBoxRow.get_child();
+
+        // first row of #adwPreferencesGroup is an Adw.PreferencesRow, use its
+        // title in drags but pass row to get fresh value at time of 'drag-begin'
+        const firstRow = adwPreferencesGroup.get_row(0); // has a get_title()
+        this.dragDropSupport.add(gtkListBoxRow, firstRow, () => {
+            this.#updateModel(); // reset serverGroups[] after drop
+            this.doSave();
+        });
+    }
+
+    /**
+     * Add a new `ServerGroup` to the top of the list.
+     */
+    #doAdd() {
+        // ServerGroup is a wrapper around an Adw.PreferencesGroup, returned by getGroup()
+        const newGroup = new ServerGroup(this, null); // widgets will not be initialized but expander will be expanded
+        this.gtkListBox.prepend(newGroup.getGroup()); // add to _beginning_ of PreferencesGroup
+        this.serverGroups.unshift(newGroup); // add to beginning of array
+        this.doSave();
+
+        // find the Gtk.ListBoxRow for drag & drop
+        // serverGroup.getGroup() > Adw.PreferencesGroup.get_parent()
+        const adwPreferencesGroup = newGroup.getGroup();
+        const gtkListBoxRow = adwPreferencesGroup.get_parent();
+
+        this.#addDragDropSupportToRow(gtkListBoxRow);
+
+        // make name field focused
+        newGroup.getNameRow().grab_focus();
+    }
+
+    /**
+     * Remove the group with supplied id from the provided set of groups.
+     *
+     * @param {ServerGroup} serverGroup
+     */
+    #removeGroup(serverGroup) {
+        // remove ServerGroup (model) by id
+        for (let i = 0; i < this.serverGroups.length; i++) {
+            const candidate = this.serverGroups[i];
+            if (candidate.id === serverGroup.id) {
+                this.serverGroups.splice(i, 1); // remove i'th group
+                break;
+            }
         }
+        // remove widget
+        this.gtkListBox.remove(serverGroup.getGroup().parent);
+        serverGroup.destroy();
+        serverGroup = null;
+    }
+
+    /**
+     * Create `ServerGroup`s per provided settings.
+     *
+     * @param {ServerSetting} settings
+     */
+    #createServerGroups(settings) {
+        for (const savedSetting of settings) {
+            // ServerGroup is a wrapper around an AdwPreferenceGroup, returned by getGroup()
+            const newGroup = new ServerGroup(this, savedSetting);
+            this.gtkListBox.append(newGroup.getGroup());
+            this.serverGroups.push(newGroup);
+        }
+    }
+
+    /**
+     * Sort the `ServerGroup`s in their new order.
+     */
+    #updateModel() {
+        const newOrder = [];
+        for (const listBoxRow of this.gtkListBox) {
+            const preferencesGroup = listBoxRow.get_child();
+            for (const serverGroup of this.serverGroups) {
+                if (serverGroup.getGroup() === preferencesGroup) {
+                    newOrder.push(serverGroup);
+                    break;
+                }
+            }
+        }
+        this.serverGroups = newOrder;
     }
 
     /**
      * Save current server settings to gsettings.
      */
-    save() {
-        const serverSettings = [];
-        if (this.serverGroups !== null) {
-            for (const serverGroup of this.serverGroups) {
-                const settings = serverGroup.settings;
-                if (settings) {
-                    settings.name = settings.name.trim();
-                    settings.url = settings.url.trim();
-                    settings.frequency = settings.frequency.toString();
-                    settings.timeout = settings.timeout.toString();
-                    settings.isGet = settings.isGet.toString();
-                    settings.notifies = settings.notifies.toString();
-                    serverSettings.push(settings);
-                }
-            }
-        }
+    doSave() {
+        const newVariant = SettingsParser.parseServerSettings(this.serverGroups);
         this.savedSettings.set_value(
-            "server-settings",
-            new GLib.Variant("aa{ss}", serverSettings),
+            'server-settings-2',
+            newVariant
         );
-        // persist
-        Gio.Settings.sync();
+        Gio.Settings.sync(); // persist
+    }
+
+    /**
+     * Handle clicking the delete button on a server group.
+     *
+     * @param {ServerGroup} serverGroup
+     */
+    doDelete(serverGroup) {
+        const serverName = serverGroup.getNameRow().text.trim();
+        const validName = serverName.length > 0;
+        const messageDialog = new Adw.MessageDialog({
+            transient_for: this.window,
+            destroy_with_parent: true,
+            modal: true,
+            heading: 'Confirm Delete',
+            body: `Are you sure you want to delete ${validName ? serverName : 'this server'}?`,
+        });
+        messageDialog.add_response('cancel', '_Cancel');
+        messageDialog.add_response('delete', '_Delete');
+        messageDialog.set_response_appearance(
+            'delete',
+            Adw.ResponseAppearance.DESTRUCTIVE
+        );
+        messageDialog.set_default_response('cancel');
+        messageDialog.set_close_response('cancel');
+        messageDialog.connect('response', (_, response) => {
+            if (response === 'delete') {
+                this.#removeGroup(serverGroup);
+                this.doSave();
+            }
+            messageDialog.destroy();
+        });
+        messageDialog.present();
+    }
+
+    /**
+     * Destroy all the `ServerGroup`s and null allocated variables.
+     */
+    destroy() {
+        this.dragDropSupport = null;
+
+        for (const serverGroup of this.serverGroups)
+            serverGroup.destroy();
+
+        this.serverGroups = null;
+        this.savedSettings = null;
+        this.gtkListBox = null;
+        this.page = null;
     }
 }

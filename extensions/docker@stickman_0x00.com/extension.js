@@ -16,7 +16,7 @@ export default class DockerExtension extends Extension {
 		this._settings = this.getSettings();
 		this._dokcerManager = new DockerManager(this);
 		this._dockerAPI = new DockerAPI();
-		this._settings.connect('changed::menu-type', this._set_menu.bind(this));
+		this._settings.connectObject('changed::menu-type', this._set_menu.bind(this), this);
 
 		this._set_menu();
 	}
@@ -36,8 +36,12 @@ export default class DockerExtension extends Extension {
 	}
 
 	disable() {
+		this._settings.disconnectObject(this);
+
 		this._indicator?.destroy();
 		this._indicator = null;
+
+		delete Main.panel.statusArea[this.uuid];
 
 		this._settings = null;
 
@@ -45,6 +49,5 @@ export default class DockerExtension extends Extension {
 		this._dokcerManager = null;
 		this._dockerAPI.destroy();
 		this._dockerAPI = null;
-
 	}
 }

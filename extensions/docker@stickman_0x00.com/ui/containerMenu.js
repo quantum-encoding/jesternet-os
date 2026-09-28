@@ -22,7 +22,7 @@ export default class ContainerMenu
 
 	constructor(parent, container) {
 		super({
-			title: container.name,
+			title: container.health === 'unhealthy' && DockerManager.settings.get_boolean('show-health') ? `⚠ ${container.name}` : container.name,
 			subtitle: container.compose_project || "",
 			toggleMode: false,
 			checked: container.state === "running",
@@ -55,8 +55,16 @@ export default class ContainerMenu
 			this.menu.open()
 		});
 
+		this._add_health();
 		this._add_action();
 		this._add_compose();
+	}
+
+	_add_health() {
+		if (!DockerManager.settings.get_boolean('show-health')) return;
+		this.menu.addMenuItem(new PopupSeparatorMenuItem(
+			`${_('Health')}: ${DockerAPI.health_label(this._container.health)}`
+		));
 	}
 
 	_add_action() {
@@ -188,6 +196,13 @@ export default class ContainerMenu
 				);
 				break;
 		}
+
+		// View logs (always available)
+		this._composeSection.addAction(
+			DockerAPI.docker_commands.compose_logs.label,
+			() => this._action(DockerAPI.docker_commands.compose_logs),
+			"format-justify-fill"
+		);
 	}
 
 	_action(command) {

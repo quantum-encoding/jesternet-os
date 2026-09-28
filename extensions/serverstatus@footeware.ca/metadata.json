@@ -5,9 +5,10 @@
   "settings-schema": "org.gnome.shell.extensions.serverstatus",
   "shell-version": [
     "49",
-    "50"
+    "50",
+    "51"
   ],
   "url": "https://github.com/CraigFoote/ca.footeware.gnomeshell.serverstatus.git",
   "uuid": "serverstatus@footeware.ca",
-  "version": 49
+  "version": 66
 }

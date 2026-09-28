@@ -16,6 +16,7 @@ export const Container_Menu = GObject.registerClass(
 			// Set size of sub menu. !important
 			this.menu.actor.style = `min-height: ${container.settings.get_int('submenu-image')}px;`;
 
+			this.add_health();
 			this.add_information();
 
 			this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem("Docker"));
@@ -131,6 +132,11 @@ export const Container_Menu = GObject.registerClass(
 					);
 					break;
 			}
+
+			// View logs (always available)
+			this.new_action_button("format-justify-fill", () => {
+				DockerAPI.run_command(DockerAPI.docker_commands.compose_logs, this._container);
+			}, DockerAPI.docker_commands.compose_logs.label);
 		}
 	}
 )

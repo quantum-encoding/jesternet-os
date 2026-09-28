@@ -1,51 +1,58 @@
-"use strict";
+'use strict';
 
-import Clutter from "gi://Clutter";
-import GLib from "gi://GLib";
-import St from "gi://St";
-import Gio from "gi://Gio";
-import GObject from "gi://GObject";
-import Soup from "gi://Soup";
-import * as Main from "resource:///org/gnome/shell/ui/main.js";
+import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
+import St from 'gi://St';
+import Gio from 'gi://Gio';
+import GObject from 'gi://GObject';
+import Soup from 'gi://Soup';
+
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
-import { Status } from "./status.js";
+
+import {Status} from './status.js';
+import {HttpOperation} from './httpOperation.js';
+import {PingOperation} from './pingOperation.js';
 
 let notificationSource;
 
 /**
  * A series of these panels are shown when the indicator icon is clicked.
- * Each shows a server status and name, and opens a browser to its URL when clicked.
+ * Each shows a server status and name, and, when it's an HTTP or HTTPS url,
+ * opens a browser to it when clicked. If it's a PING, no action occurs on click.
  */
 export const ServerStatusPanel = GObject.registerClass(
     {
-        GTypeName: "ServerStatusPanel",
+        GTypeName: 'ServerStatusPanel',
     },
     class ServerStatusPanel extends St.BoxLayout {
         constructor(
             serverSetting,
             updateTaskbarCallback,
             iconProvider,
+            isNotifyingCallback,
             ...otherProps
         ) {
             super(otherProps);
             this.serverSetting = serverSetting;
             this.updateTaskbarCallback = updateTaskbarCallback;
             this.iconProvider = iconProvider;
+            this.isNotifyingCallback = isNotifyingCallback;
 
             // mouse rollover
             this.track_hover = true;
             this.reactive = true;
-            this.style_class = "server-panel";
+            this.style_class = 'server-panel';
 
             // track pending requests for cleanup
-            this.pendingCancellables = new Set();
-
-            // flag to indicate panel is disposed and to ignore returning requests
-            this.isDestroyed = false;
+            this.pendingOperations = new Set();
 
             // click to open browser
-            this.connect("button-press-event", () => {
-                this.openBrowser(serverSetting.url);
+            this.connect('button-press-event', () => {
+                if (serverSetting.verb === 'GET' || serverSetting.verb === 'HEAD')
+                    this.#openBrowser(serverSetting.url);
+                else if (serverSetting.verb === 'PING')
+                    this.#openTerminal(serverSetting.url);
                 return Clutter.EVENT_PROPAGATE;
             });
 
@@ -57,80 +64,59 @@ export const ServerStatusPanel = GObject.registerClass(
             // icon displaying status by emoji icon
             this.panelIcon = new St.Icon({
                 gicon: this.iconProvider.getIcon(Status.Init),
-                style_class: "icon-lg padded",
+                style_class: 'icon-lg padded',
             });
-            let panelIconDisposed = false;
-            this.panelIcon.connect("destroy", () => (panelIconDisposed = true));
             this.add_child(this.panelIcon);
 
             // server name display
             const nameLabel = new St.Label({
                 text: serverSetting.name,
-                style_class: "padded",
+                style_class: 'padded',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             this.add_child(nameLabel);
 
             // duration indicator
-            const durationIndicator = new St.Label({
-                text: "",
-                style_class: "duration",
+            this.durationIndicator = new St.Label({
+                text: '',
+                style_class: 'duration',
             });
-            let durationIndicatorDisposed = false;
-            durationIndicator.connect(
-                "destroy",
-                () => (durationIndicatorDisposed = true),
-            );
             const durationIndicatorContainer = new St.Bin({
-                style_class: "bin",
+                style_class: 'right-align',
                 x_expand: true,
                 x_align: Clutter.ActorAlign.END,
-                child: durationIndicator,
+                child: this.durationIndicator,
             });
             this.add_child(durationIndicatorContainer);
 
             // call once then schedule
-            this.update(
-                serverSetting.url,
-                panelIconDisposed,
-                durationIndicator,
-                durationIndicatorDisposed,
-            );
+            this.#update();
 
-            // schedule recurring http calls
+            // schedule recurring requests
             this.intervalID = GLib.timeout_add(
                 GLib.PRIORITY_DEFAULT,
                 serverSetting.frequency * 1000,
                 () => {
-                    this.update(
-                        serverSetting.url,
-                        panelIconDisposed,
-                        durationIndicator,
-                        durationIndicatorDisposed,
-                    );
+                    this.#update();
                     return GLib.SOURCE_CONTINUE;
-                },
+                }
             );
 
-            this.connect("destroy", () => {
-                // prevent other functions from acting on received responses
-                this.isDestroyed = true;
-
+            this.connect('destroy', () => {
                 // remove id to recurring http calls
                 if (this.intervalID) {
-                    GLib.source_remove(this.intervalID);
+                    GLib.Source.remove(this.intervalID);
                     this.intervalID = null;
                 }
 
                 // clear all pending requests
-                if (this.pendingCancellables) {
-                    this.pendingCancellables.forEach((cancellable) => {
-                        if (!cancellable.is_cancelled()) {
-                            cancellable.cancel();
-                        }
+                if (this.pendingOperations) {
+                    this.pendingOperations.forEach(operation => {
+                        operation.cancel();
+                        this.pendingOperations.delete(operation);
+                        operation = null;
                     });
-                    this.pendingCancellables.clear();
-                    this.pendingCancellables = null;
+                    this.pendingOperations = null;
                 }
 
                 // Clean up the HTTP session
@@ -144,198 +130,104 @@ export const ServerStatusPanel = GObject.registerClass(
                 this.serverSetting = null;
                 this.updateTaskbarCallback = null;
                 this.iconProvider = null;
+                this.isNotifyingCallback = null;
+                this.durationIndicator = null;
             });
         }
 
         /**
          * Returns the status of the server this panel represents.
          *
-         * @return {Status}
+         * @returns {Status}
          */
         getStatus() {
             return this.iconProvider.getStatus(this.panelIcon?.gicon);
         }
 
         /**
-         * Invoked on a schedule, make request with provided URL.
-         *
-         * @param {String} url
-         * @param {boolean} panelIconDisposed whether the panel icon has been disposed
-         * @param {St.Label} durationIndicator
-         * @param {boolean} durationIndicatorDisposed
+         * Stop polling and cancel in-flight requests. Resets icon to Init.
+         * Called on system suspend.
          */
-        update(
-            url,
-            panelIconDisposed,
-            durationIndicator,
-            durationIndicatorDisposed,
-        ) {
-            if (!this.isDestroyed) {
-                const httpMethod = this.serverSetting.isGet ? "GET" : "HEAD";
-                this.makeRequest(
-                    httpMethod,
-                    url,
-                    this.panelIcon,
-                    panelIconDisposed,
-                    durationIndicator,
-                    durationIndicatorDisposed,
-                );
+        suspend() {
+            if (this.intervalID) {
+                GLib.Source.remove(this.intervalID);
+                this.intervalID = null;
             }
+            this.pendingOperations.forEach(op => {
+                op.cancel();
+            });
+            this.pendingOperations.clear();
+            if (this.panelIcon)
+                this.panelIcon.gicon = this.iconProvider.getIcon(Status.Init);
+        }
+
+        /**
+         * Restart polling after a resume event.
+         */
+        resume() {
+            this.#update();
+            this.intervalID = GLib.timeout_add(
+                GLib.PRIORITY_DEFAULT,
+                this.serverSetting.frequency * 1000,
+                () => {
+                    this.#update();
+                    return GLib.SOURCE_CONTINUE;
+                }
+            );
+        }
+
+        /**
+         * Invoked on a schedule, make request with provided URL.
+         */
+        #update() {
+            const verb = this.serverSetting.verb ?? 'HEAD';
+
+            let operation;
+            if (verb === 'HEAD' || verb === 'GET') {
+                operation = new HttpOperation(this, () => {
+                    // callback is called to clean up after completion
+                    this.pendingOperations.delete(operation);
+                    operation = null;
+                });
+            } else if (verb === 'PING') {
+                operation = new PingOperation(this, () => {
+                    // callback is called to clean up after completion
+                    this.pendingOperations.delete(operation);
+                    operation = null;
+                });
+            }
+
+            this.pendingOperations.add(operation);
+
+            operation.run();
             return GLib.SOURCE_CONTINUE;
         }
 
         /**
-         * Execute the URL invocation asynchronously and trigger the update of the GUI.
+         * Reflect the response. Update the icons, panel text and possibly notify user.
          *
-         * @param {String} httpMethod
-         * @param {String} url
-         * @param {St.Icon} panelIcon
-         * @param {boolean} panelIconDisposed
-         * @param {St.Label} durationIndicator
-         * @param {boolean} durationIndicatorDisposed
+         * @param {string} reason
+         * @param {Gio.icon} newIcon
+         * @param {boolean} timedOut
+         * @param {number} duration
          */
-        makeRequest(
-            httpMethod,
-            url,
-            panelIcon,
-            panelIconDisposed,
-            durationIndicator,
-            durationIndicatorDisposed,
-        ) {
-            if (this.isDestroyed) {
-                return;
-            }
-            // create http object, `new Soup.Message()` constructor is deprecated in favor of '.new' 🤨
-            const message = Soup.Message.new(httpMethod, url);
-            if (message) {
-                // create a cancellable for this request
-                const cancellable = new Gio.Cancellable();
-                this.pendingCancellables.add(cancellable);
-
-                // start duration calc.
-                const start = Date.now();
-
-                // do the actual http call
-                this.session.send_and_read_async(
-                    message,
-                    GLib.PRIORITY_DEFAULT,
-                    cancellable,
-                    () => {
-                        // response received, complete duration calc.
-                        const duration = Date.now() - start;
-
-                        if (this.isDestroyed || !this.pendingCancellables) {
-                            return;
-                        }
-
-                        this.processResponse(cancellable, duration, message, panelIcon, panelIconDisposed, durationIndicator, durationIndicatorDisposed);
-                    });
-            } else {
-                // message was null because of malformed url
-                panelIcon.gicon = this.iconProvider.getIcon(Status.Bad);
-                this.updateTaskbarCallback?.();
-            }
-        }
-
-        /**
-         * Process the provided message and update the UI accordingly.
-         * 
-         * @param {Gio.Cancellable} cancellable 
-         * @param {number} duration 
-         * @param {Soup.Message} message 
-         * @param {Gio.icon} panelIcon 
-         * @param {boolean} panelIconDisposed 
-         * @param {St.Label} durationIndicator 
-         * @param {boolean} durationIndicatorDisposed 
-         */
-        processResponse(cancellable, duration, message, panelIcon, panelIconDisposed, durationIndicator, durationIndicatorDisposed) {
-            // remove completed request from pending set
-            this.pendingCancellables.delete(cancellable);
-
-            // parse result if emoji widget hasn't been destroyed
-            if (panelIcon && !panelIconDisposed) {
-                let newIcon;
-                let timedOut = false;
-                let reason;
-
-                // 429 Too Many Requests causes a 'bad Soup enum' error 🤨; use try-catch
-                try {
-                    const soupStatus = message.status_code;
-
-                    /*
-                     * Check for timeout first. Soup supposedly uses status code 1 for 
-                     * timeouts but I haven't seen it or REQUEST_TIMEOUT.
-                     * Also there's https://gitlab.gnome.org/GNOME/libsoup/-/issues/155.
-                     * Use duration calc. for now.
-                     */
-                    if (
-                        soupStatus === 1 ||
-                        soupStatus === Soup.Status.REQUEST_TIMEOUT ||
-                        duration > (this.session.get_timeout() * 1000)
-                    ) {
-                        // request timed out
-                        newIcon = this.iconProvider.getIcon(
-                            Status.Down,
-                        );
-                        timedOut = true;
-                        reason = `This server timed out after ${duration / 1000} seconds.`;
-                    } else if (
-                        // consider 200 through 399 success result
-                        soupStatus >= 200 &&
-                        soupStatus < 400
-                    ) {
-                        // success
-                        newIcon = this.iconProvider.getIcon(
-                            Status.Up,
-                        );
-                    } else if (soupStatus === 0) {
-                        // incomplete response
-                        newIcon = this.iconProvider.getIcon(Status.Down);
-                        reason = "This server is down. No status was received.";
-                    } else {
-                        // HTTP error
-                        newIcon = this.iconProvider.getIcon(
-                            Status.Down,
-                        );
-                        reason = `This server is down: ${soupStatus} ${message.reason_phrase}.`;
-                    }
-                } catch (e) {
-                    // 429 or another status missing from the soup enum?
-                    newIcon = this.iconProvider.getIcon(Status.Down);
-                    reason = `This server is down: ${e.message}.`;
+        updateGUI(reason, newIcon, timedOut, duration) {
+            if (this.panelIcon && this.iconProvider) {
+                // update row icon
+                this.panelIcon.gicon = newIcon;
+                // update response time label if it hasn't been destroyed
+                if (this.durationIndicator) {
+                    let durationText = '';
+                    if (timedOut)
+                        durationText = `Timed out at ${duration}ms`;
+                    else if (duration)
+                        durationText = `${duration}ms`;
+                    this.durationIndicator.text = durationText;
                 }
 
-                this.updateGUI(panelIcon, newIcon, durationIndicator, durationIndicatorDisposed, timedOut, duration, reason);
-            }
-        }
-
-        /**
-         * Handle the response. Update the icons, panel text and possibly notify user.
-         * 
-         * @param {Gio.icon} panelIcon 
-         * @param {Gio.icon} newIcon 
-         * @param {St.Label} durationIndicator 
-         * @param {boolean} durationIndicatorDisposed 
-         * @param {boolean} timedOut 
-         * @param {number} duration 
-         * @param {String} reason 
-         */
-        updateGUI(panelIcon, newIcon, durationIndicator, durationIndicatorDisposed, timedOut, duration, reason) {
-            // update row icon
-            panelIcon.gicon = newIcon;
-
-            // update response time label if it hasn't been destroyed
-            if (
-                durationIndicator &&
-                !durationIndicatorDisposed
-            ) {
-                durationIndicator.text = timedOut ? `timed out @ ${this.session.get_timeout()}s` :
-                    `${duration}ms`;
-            }
-
-            // notify user if we are notifying and status is down
-            if (this.serverSetting.notifies && (this.iconProvider.getStatus(newIcon) === Status.Down)) {
-                this.fireNotification(newIcon, reason);
+                // notify user if we are notifying and status is down
+                if (this.serverSetting.notifies && (this.iconProvider.getStatus(newIcon) === Status.Down))
+                    this.#fireNotification(newIcon, reason);
             }
 
             // update main indicator icon
@@ -344,32 +236,46 @@ export const ServerStatusPanel = GObject.registerClass(
 
         /**
          * Show a desktop notification using the provided icon and this panel's name.
-         * 
-         * @param {Gio.icon} icon 
-         * @param {String} reason
+         *
+         * @param {Gio.icon} icon
+         * @param {string} reason
          */
-        fireNotification(icon, reason) {
-            const source = this.getNotificationSource();
+        #fireNotification(icon, reason) {
+            if (!this.isNotifyingCallback?.())
+                return;
+
+            const source = this.#getNotificationSource();
             const notification = new MessageTray.Notification({
-                source: source,
-                title: _(this.serverSetting.name),
-                body: _(reason),
+                source,
+                title: this.serverSetting.name,
+                body: reason,
                 gicon: icon,
-                urgency: MessageTray.Urgency.HIGH,
+                urgency: MessageTray.Urgency.NORMAL,
             });
+
+            // add 'Open in' button
+            if (this.serverSetting.verb === 'HEAD' || this.serverSetting.verb === 'GET') {
+                notification.addAction('Open in Browser', () => {
+                    this.#openBrowser(this.serverSetting.url);
+                });
+            } else if (this.serverSetting.verb === 'PING') {
+                notification.addAction('Open in Terminal', () => {
+                    this.#openTerminal(this.serverSetting.url);
+                });
+            }
             source.addNotification(notification);
         }
 
         /**
          * Lazily creates and returns a notification source.
-         * 
+         *
          * @returns {MessageTray.Source}
          */
-        getNotificationSource() {
+        #getNotificationSource() {
             if (!notificationSource) {
                 notificationSource = new MessageTray.Source({
-                    title: _("Server Status Indicator"),
-                    iconName: "dialog-warning",
+                    title: 'Server Status Indicator',
+                    iconName: 'dialog-warning',
                     policy: new MessageTray.NotificationGenericPolicy(),
                 });
                 notificationSource.connect('destroy', _source => {
@@ -383,11 +289,43 @@ export const ServerStatusPanel = GObject.registerClass(
         /**
          * Open a web browser at supplied URL.
          *
-         * @param {String} url
+         * @param {string} url
          */
-        openBrowser(url) {
-            Gio.AppInfo.launch_default_for_uri_async(url, null, null, null);
+        async #openBrowser(url) {
+            if (url.startsWith('http')) {
+                await Gio.AppInfo.launch_default_for_uri_async(
+                    url,
+                    null,
+                    null,
+                    (appInfo, result) => {
+                        Gio.AppInfo.launch_default_for_uri_finish(result);
+                    }
+                );
+            }
+        }
+
+        /**
+         * Open the provided address in a new terminal window.
+         *
+         * @param {string} url
+         */
+        async #openTerminal(url) {
+            // find a terminal program
+            let terminal = GLib.find_program_in_path('x-terminal-emulator');
+            if (!terminal)
+                terminal = GLib.find_program_in_path('ptyxis');
+            if (!terminal)
+                terminal = GLib.find_program_in_path('gnome-terminal');
+            if (!terminal)
+                terminal = GLib.find_program_in_path('kgx');
+            if (!terminal)
+                return;
+
+            const process = new Gio.Subprocess({
+                argv: [terminal, '--', 'ping', url],
+                flags: Gio.SubprocessFlags.NONE,
+            });
+            await process.init(null);
         }
     }
 );
-

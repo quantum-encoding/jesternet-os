@@ -23,7 +23,7 @@
 }
 
 .extension-list-label:focus {
-  outline: 0.15em solid -st-accent-color;
+  outline: 0.15em solid st-transparentize(-st-accent-color, 0.25);
 }
 
 .extension-list-icon {
@@ -35,5 +35,5 @@
 }
 
 .extension-list-icon:focus {
-  outline: 0.15em solid st-lighten(-st-accent-color, 4%);
+  outline: 0.15em solid st-transparentize(-st-accent-color, 0.25);
 }

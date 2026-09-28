@@ -170,14 +170,15 @@ install_extensions() {
         ext_name=$(basename "$ext_dir")
         cp -r "$ext_dir" ~/.local/share/gnome-shell/extensions/
         echo -e "  ${GREEN}✓${NC} $ext_name"
-        ((count++))
+        # Not ((count++)): it returns status 1 when count is 0, which aborts under set -e
+        count=$((count + 1))
     done
 
     # Install darkglass-themer (in root of repo)
     if [ -d "$SCRIPT_DIR/darkglass-themer@jesternet.com" ]; then
         cp -r "$SCRIPT_DIR/darkglass-themer@jesternet.com" ~/.local/share/gnome-shell/extensions/
         echo -e "  ${GREEN}✓${NC} darkglass-themer@jesternet.com"
-        ((count++))
+        count=$((count + 1))
     fi
 
     log_success "$count extensions installed"
@@ -214,35 +215,90 @@ apply_blur_settings() {
     fi
 }
 
+# Per-extension look and layout, exported from the reference machine.
+# config/extensions/<name>.conf loads into /org/gnome/shell/extensions/<name>/.
+apply_extension_settings() {
+    log_step "Applying extension settings..."
+
+    local conf_dir="$SCRIPT_DIR/config/extensions"
+    [ -d "$conf_dir" ] || { log_warning "No extension settings found, skipping"; return 0; }
+
+    local conf name
+    for conf in "$conf_dir"/*.conf; do
+        name=$(basename "$conf" .conf)
+        [ "$name" = "burn-my-windows-profile" ] && continue
+        dconf load "/org/gnome/shell/extensions/$name/" < "$conf"
+        echo -e "  ${GREEN}✓${NC} $name"
+    done
+
+    # Burn My Windows keeps its effect choice in a profile file referenced by an
+    # absolute path, so install the profile and point the setting at this $HOME.
+    if [ -f "$conf_dir/burn-my-windows-profile.conf" ]; then
+        local profile="$HOME/.config/burn-my-windows/profiles/jesternet.conf"
+        mkdir -p "$(dirname "$profile")"
+        cp "$conf_dir/burn-my-windows-profile.conf" "$profile"
+        dconf write /org/gnome/shell/extensions/burn-my-windows/active-profile "'$profile'"
+        echo -e "  ${GREEN}✓${NC} burn-my-windows profile"
+    fi
+
+    log_success "Extension settings applied"
+}
+
 # ============================================================================
 # Enable Extensions
 # ============================================================================
 
+# `gnome-extensions enable` only works on extensions the running shell has
+# already loaded. On Wayland freshly copied extensions aren't loaded until the
+# next login, so add them to enabled-extensions directly; the shell picks them
+# up on login.
+enable_extension() {
+    local uuid="$1"
+
+    gnome-extensions enable "$uuid" 2>/dev/null && return 0
+
+    local current
+    current=$(gsettings get org.gnome.shell enabled-extensions)
+    [[ "$current" == *"'$uuid'"* ]] && return 0
+
+    if [[ "$current" == "@as []" || "$current" == "[]" ]]; then
+        gsettings set org.gnome.shell enabled-extensions "['$uuid']"
+    else
+        gsettings set org.gnome.shell enabled-extensions "${current%]}, '$uuid']"
+    fi
+}
+
 enable_extensions() {
     log_step "Enabling extensions..."
 
-    local enabled=0
-    local failed=0
+    # Only the extensions the reference machine runs; the rest (e.g. ThinkPad
+    # thermal) are bundled for users who want them but left off by default.
+    local list="$SCRIPT_DIR/config/enabled-extensions.txt"
+    local uuids=()
+    if [ -f "$list" ]; then
+        mapfile -t uuids < <(grep -vE '^\s*(#|$)' "$list")
+    else
+        local ext_dir
+        for ext_dir in "$SCRIPT_DIR/extensions"/*/; do
+            uuids+=("$(basename "$ext_dir")")
+        done
+    fi
 
-    for ext_dir in ~/.local/share/gnome-shell/extensions/*/; do
-        local ext_name
-        ext_name=$(basename "$ext_dir")
-        if gnome-extensions enable "$ext_name" 2>/dev/null; then
-            echo -e "  ${GREEN}✓${NC} $ext_name"
-            ((enabled++))
-        else
-            echo -e "  ${YELLOW}~${NC} $ext_name (will activate after restart)"
-            ((failed++))
+    local enabled=0 uuid
+    for uuid in "${uuids[@]}"; do
+        if [ ! -d "$HOME/.local/share/gnome-shell/extensions/$uuid" ]; then
+            log_warning "$uuid listed but not installed, skipping"
+            continue
         fi
+        enable_extension "$uuid"
+        echo -e "  ${GREEN}✓${NC} $uuid"
+        enabled=$((enabled + 1))
     done
-
-    # Also enable system-level user-theme extension
-    gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com 2>/dev/null || true
 
     # Apply shell theme via user-theme extension
     dconf write /org/gnome/shell/extensions/user-theme/name "'DarkGlass'" 2>/dev/null || true
 
-    log_success "$enabled extensions enabled ($failed pending restart)"
+    log_success "$enabled extensions enabled (active after next login)"
 }
 
 # ============================================================================
@@ -299,5 +355,6 @@ install_wallpaper
 install_extensions
 apply_gsettings
 apply_blur_settings
+apply_extension_settings
 enable_extensions
 print_summary

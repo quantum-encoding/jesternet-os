@@ -12,7 +12,7 @@ export default class DockerCounter {
 
 		this._label = label;
 		this._set_timer();
-		this._connection = this._settings.connect('changed::up-containers-timer', this._up_containers_timer_change.bind(this));
+		this._settings.connectObject('changed::up-containers-timer', this._up_containers_timer_change.bind(this), this);
 	}
 
 	_up_containers_timer_change(settings, key) {
@@ -59,7 +59,7 @@ export default class DockerCounter {
 	}
 
 	destroy() {
-		this._settings.disconnect(this._connection);
+		this._settings.disconnectObject(this);
 		this._remove_timer();
 	}
 }

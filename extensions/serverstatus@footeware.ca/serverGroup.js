@@ -1,8 +1,10 @@
-"use strict";
+'use strict';
 
-import Gtk from "gi://Gtk";
-import Adw from "gi://Adw";
-import { ServerSetting } from "./serverSetting.js";
+import Gtk from 'gi://Gtk';
+import Adw from 'gi://Adw';
+
+import {ServerSetting} from './serverSetting.js';
+import {HeadersDialog} from './headersDialog.js';
 
 /**
  * A new group is displayed when _Add_ is clicked in the preferences dialog.
@@ -13,176 +15,368 @@ export class ServerGroup {
      * Constructor.
      *
      * @param {ServerStatusPreferences} preferences
-     * @param {ServerSetting} settings, may be null in which case the fields remain empty, expander is automatically opened and name field focused.
+     * @param {ServerSetting} settings will be null for new configs in which case the fields remain empty,
+     *          expander is automatically opened and name field focused.
      */
     constructor(preferences, settings) {
-        this.id = this.createUID();
         this.preferences = preferences;
-        this.serverSettingGroup = new Adw.PreferencesGroup({});
+        this.settings = settings;
 
-        // expander
-        this.expander = new Adw.ExpanderRow();
-        // disable pango as it fails on & in url query strings
-        this.expander.set_use_markup(false);
-        const title = settings?.name ?? "";
-        this.expander.set_title(title);
-        const subtitle = settings
-            ? `${settings.isGet ? "GET" : "HEAD"} ${settings.url} @ ${settings.frequency}s with ${settings.timeout}s timeout ${settings.notifies ? "🔔" : ""}`
-            : "";
-        this.expander.set_subtitle(subtitle);
-        this.serverSettingGroup.add(this.expander);
+        this.id = this.#createUID();
+        this.serverSettingGroup = new Adw.PreferencesGroup();
+        this.visible = this.settings?.visible ?? true;
 
-        // name text field
-        this.nameRow = new Adw.EntryRow({
-            title: "Name",
-            text: settings?.name ?? "",
-            show_apply_button: true,
-        });
-        this.nameRow.connect("apply", () => {
-            this.update();
-        });
-        this.expander.add_row(this.nameRow);
+        const expanderRow = this.#getExpanderRow();
+        this.serverSettingGroup.add(expanderRow);
 
-        // url text field
-        this.urlRow = new Adw.EntryRow({
-            title: "URL",
-            text: settings?.url ?? "",
-            show_apply_button: true,
-        });
-        this.urlRow.connect("apply", () => {
-            this.update();
-        });
-        this.expander.add_row(this.urlRow);
-
-        // frequency spinner
-        this.frequencyRow = Adw.SpinRow.new_with_range(10, 300, 10);
-        this.frequencyRow.set_value(settings?.frequency ?? 120);
-        this.frequencyRow.set_title("Frequency (secs.)");
-        this.frequencyRow.connect("notify::value", () => {
-            this.update();
-        });
-        this.expander.add_row(this.frequencyRow);
-
-        // timeout spinner
-        this.timeoutRow = Adw.SpinRow.new_with_range(1, 300, 1);
-        this.timeoutRow.set_value(settings?.timeout ?? 10);
-        this.timeoutRow.set_title("Timeout (secs.)");
-        this.timeoutRow.connect("notify::value", () => {
-            this.update();
-        });
-        this.expander.add_row(this.timeoutRow);
-
-        // 'use GET' switch
-        this.useGetSwitchRow = new Adw.SwitchRow({
-            title: "Use GET rather than HEAD",
-        });
-        const isGet = settings?.isGet ?? false;
-        this.useGetSwitchRow.set_active(isGet);
-        this.useGetSwitchRow.connect("notify::active", () => {
-            this.update();
-        });
-        this.expander.add_row(this.useGetSwitchRow);
-
-        // 'use notifications' switch
-        this.useNotificationsSwitchRow = new Adw.SwitchRow({
-            title: "Notify when down",
-        });
-        const notifies = settings?.notifies ?? false;
-        this.useNotificationsSwitchRow.set_active(notifies);
-        this.useNotificationsSwitchRow.connect("notify::active", () => {
-            this.update();
-        });
-        this.expander.add_row(this.useNotificationsSwitchRow);
-
-        // move up/down row
-        const moveRow = new Adw.ActionRow({
-            title: "Move Up/Down",
-        });
-        const moveUpButton = Gtk.Button.new_from_icon_name("go-up-symbolic");
-        moveUpButton.connect("clicked", () => {
-            // does a move actually happen?
-            if (this.moveUp(preferences.serverGroups)) {
-                preferences.reorder();
-                preferences.save();
-            }
-        });
-        const moveDownButton =
-            Gtk.Button.new_from_icon_name("go-down-symbolic");
-        moveDownButton.connect("clicked", () => {
-            // does a move actually happen?
-            if (this.moveDown(preferences.serverGroups)) {
-                preferences.reorder();
-                preferences.save();
-            }
-        });
-        const moveButtonBox = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL,
-            spacing: 10,
-        });
-        moveButtonBox.append(moveUpButton);
-        moveButtonBox.append(moveDownButton);
-        moveRow.add_suffix(moveButtonBox);
-        this.serverSettingGroup.add(moveRow);
-
-        // delete button
-        const deleteRow = new Adw.ActionRow({
-            title: "Delete this server",
-        });
-        const deleteButton = Gtk.Button.new_from_icon_name(
-            "edit-delete-symbolic",
-        );
-        deleteButton.set_css_classes(["destructive-action"]);
-        deleteRow.add_suffix(deleteButton);
-        this.serverSettingGroup.add(deleteRow);
-        deleteButton.connect("clicked", () => {
-            const messageDialog = new Adw.MessageDialog({
-                transient_for: preferences.window,
-                destroy_with_parent: true,
-                modal: true,
-                heading: "Confirm Delete",
-                body: "Are you sure you want to delete this server?",
-            });
-            messageDialog.add_response("cancel", "_Cancel");
-            messageDialog.add_response("delete", "_Delete");
-            messageDialog.set_response_appearance(
-                "delete",
-                Adw.ResponseAppearance.ADW_RESPONSE_DESTRUCTIVE,
-            );
-            messageDialog.set_default_response("cancel");
-            messageDialog.set_close_response("cancel");
-            messageDialog.connect("response", (_, response) => {
-                if (response === "delete") {
-                    this.createServerSettings();
-                    this.removeGroup(this.id, preferences.serverGroups);
-                    preferences.page.remove(this.serverSettingGroup);
-                    preferences.save();
-                }
-                messageDialog.destroy();
-            });
-            messageDialog.present();
-        });
-
-        this.createServerSettings();
-
-        if (settings === null) {
-            this.expander.set_expanded(true);
+        if (!this.settings) {
+            this.headers = [];
+            this.expanderRow.set_expanded(true);
             this.nameRow.grab_focus();
+        } else {
+            this.headers = this.settings.headers ?? [];
         }
+        this.#createServerSettings();
     }
 
     /**
-     * Renew #serverSettings, save them and update UI.
+     * Create a unique ID for this group.
+     *
+     * @returns {string}
      */
-    update() {
-        this.createServerSettings();
-        this.preferences.save();
-        this.updateExpander();
+    #createUID() {
+        const buffer = [];
+        const chars =
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        const charlen = chars.length;
+        for (let i = 0; i < 32; i++)
+            buffer[i] = chars.charAt(Math.floor(Math.random() * charlen));
+
+        return buffer.join('');
+    }
+
+    /**
+     * Create the expander row with all the controls for this server group.
+     *
+     * @returns {Adw.ExpanderRow}
+     */
+    #getExpanderRow() {
+        this.expanderRow = new Adw.ExpanderRow();
+        // disable pango as it fails on & in url query strings
+        this.expanderRow.set_use_markup(false);
+
+        // title
+        this.expanderRow.set_title(this.settings?.name ?? '');
+        // subtitle
+        this.expanderRow.set_subtitle(this.#initSubtitle());
+
+        // handle icon for drag & drop as prefix
+        this.expanderRow.add_prefix(new Gtk.Image({
+            icon_name: 'list-drag-handle-symbolic',
+        }));
+
+        // suffix: indicator icons and buttons
+        const suffixBox = this.#createSuffixBox();
+        this.expanderRow.add_suffix(suffixBox);
+
+        const nameRow = this.getNameRow();
+        this.expanderRow.add_row(nameRow);
+
+        const urlRow = this.#createUrlRow();
+        this.expanderRow.add_row(urlRow);
+
+        const verbRow = this.#createVerbRow();
+        this.expanderRow.add_row(verbRow);
+
+        const frequencyRow = this.#createFrequencyRow();
+        this.expanderRow.add_row(frequencyRow);
+
+        const timeoutRow = this.#createTimeoutRow();
+        this.expanderRow.add_row(timeoutRow);
+
+        const useNotificationsRow = this.#getUseNotificationsRow();
+        this.expanderRow.add_row(useNotificationsRow);
+
+        const ignoreTLSErrorsRow = this.#getIgnoreTLSErrorsRow();
+        this.expanderRow.add_row(ignoreTLSErrorsRow);
+
+        const ignoreRedirectsRow = this.#getIgnoreRedirectsRow();
+        this.expanderRow.add_row(ignoreRedirectsRow);
+
+        const headersRow = this.#getHeadersRow();
+        this.expanderRow.add_row(headersRow);
+
+        return this.expanderRow;
+    }
+
+    #createSuffixBox() {
+        const suffixBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 4,
+        });
+
+        // assemble and add indicators
+        suffixBox.append(this.#createIndicatorsBox());
+
+        // assemble and add buttons
+        suffixBox.append(this.#createExpanderButtonsBox());
+
+        return suffixBox;
+    }
+
+    /**
+     * Assemble the indicators in a suffix box.
+     *
+     * @returns {Gtk.Box}
+     */
+    #createIndicatorsBox() {
+        const indicatorsBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 2,
+        });
+
+        this.ignoreTLSErrorsImage = Gtk.Image.new_from_file(`${this.preferences.path}/assets/warning-outline-symbolic.svg`);
+        this.ignoreTLSErrorsImage.set_tooltip_text('Ignore TLS certificate errors');
+
+        this.ignoreRedirectsImage = Gtk.Image.new_from_file(`${this.preferences.path}/assets/stop-sign-outline-symbolic.svg`);
+        this.ignoreRedirectsImage.set_tooltip_text('Do not follow redirects');
+
+        this.notifiesImage = Gtk.Image.new_from_file(`${this.preferences.path}/assets/bell-outline-symbolic.svg`);
+        this.notifiesImage.set_tooltip_text('Notify when down');
+
+        this.headersImage = Gtk.Image.new_from_file(`${this.preferences.path}/assets/h-symbolic.svg`);
+        this.headersImage.set_tooltip_text('Headers are set');
+
+        indicatorsBox.append(this.ignoreTLSErrorsImage);
+        indicatorsBox.append(this.ignoreRedirectsImage);
+        indicatorsBox.append(this.notifiesImage);
+        indicatorsBox.append(this.headersImage);
+
+        this.#updateIndicators();
+
+        return indicatorsBox;
+    }
+
+    /**
+     * Update the visibility of icons indicating 'Ignore TLS errors', 'Do not follow redirects' and 'Notify when down'.
+     */
+    #updateIndicators() {
+        this.ignoreTLSErrorsImage.set_visible(this.settings?.ignoreTLSErrors ?? false);
+        this.ignoreRedirectsImage.set_visible(this.settings?.ignoreRedirects ?? false);
+        this.notifiesImage.set_visible(this.settings?.notifies ?? false);
+        const hasHeaders = this.settings && this.settings.headers && this.settings.headers.length > 0;
+        this.headersImage.set_visible(hasHeaders);
+    }
+
+    /**
+     * Gets the box containing delete and visibility buttons.
+     *
+     * @returns {Gtk.Box}
+     */
+    #createExpanderButtonsBox() {
+        const buttonsBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 2,
+        });
+
+        // visibility button
+        const visibilityIcon = this.visible ? 'view-reveal-symbolic' : 'view-conceal-symbolic';
+        this.visibilityButton = Gtk.Button.new_from_icon_name(visibilityIcon);
+        this.visibilityButton.set_valign(Gtk.Align.CENTER);
+        this.visibilityHandlerId = this.visibilityButton.connect('clicked', () => {
+            this.visible = !this.visible;
+            const newIcon = this.visible ? 'view-reveal-symbolic' : 'view-conceal-symbolic';
+            this.visibilityButton.set_icon_name(newIcon);
+            this.update();
+        });
+        this.visibilityButton.set_tooltip_text('Show in menu');
+
+        // delete button
+        this.deleteButton = Gtk.Button.new_from_icon_name(
+            'edit-delete-symbolic'
+        );
+        this.deleteButton.set_css_classes(['destructive-action']);
+        this.deleteButton.set_valign(Gtk.Align.CENTER);
+        this.deleteHandlerId = this.deleteButton.connect('clicked', () => {
+            this.preferences.doDelete(this);
+        });
+        this.deleteButton.set_tooltip_text('Delete this server');
+
+        buttonsBox.append(this.visibilityButton);
+        buttonsBox.append(this.deleteButton);
+
+        return buttonsBox;
+    }
+
+    getNameRow() {
+        if (!this.nameRow) {
+            this.nameRow = new Adw.EntryRow({
+                title: 'Name',
+                text: this.settings?.name ?? '',
+                show_apply_button: true,
+            });
+            this.nameHandlerId = this.nameRow.connect('apply', () => {
+                this.update();
+            });
+        }
+        return this.nameRow;
+    }
+
+    #createUrlRow() {
+        this.urlRow = new Adw.EntryRow({
+            title: 'URL',
+            text: this.settings?.url ?? '',
+            show_apply_button: true,
+        });
+        this.urlHandlerId = this.urlRow.connect('apply', () => {
+            this.update();
+        });
+        return this.urlRow;
+    }
+
+    #createFrequencyRow() {
+        this.frequencyRow = Adw.SpinRow.new_with_range(10, 600, 10); // 10m freq limit
+        this.frequencyRow.set_value(this.settings?.frequency ?? 120);
+        this.frequencyRow.set_title('Frequency (secs.)');
+        this.frequencyHandlerId = this.frequencyRow.connect('notify::value', () => {
+            this.update();
+        });
+        return this.frequencyRow;
+    }
+
+    #createTimeoutRow() {
+        this.timeoutRow = Adw.SpinRow.new_with_range(1, 300, 1); // 5m timeout limit
+        this.timeoutRow.set_value(this.settings?.timeout ?? 10);
+        this.timeoutRow.set_title('Timeout (secs.)');
+        this.timeoutHandlerId = this.timeoutRow.connect('notify::value', () => {
+            this.update();
+        });
+        return this.timeoutRow;
+    }
+
+    #createVerbRow() {
+        this.verbRow = new Adw.ComboRow({
+            title: 'Request verb',
+        });
+        const verbModel = Gtk.StringList.new(['HEAD', 'GET', 'PING']);
+        this.verbRow.set_model(verbModel);
+        // init
+        const verb = this.settings?.verb ?? null;
+        if (verb) {
+            const numItems = verbModel.get_n_items();
+            for (let i = 0; i < numItems; i++) {
+                if (verbModel.get_item(i).get_string() === verb) {
+                    this.verbRow.set_selected(i);
+                    break;
+                }
+            }
+        }
+        this.verbHandlerId = this.verbRow.connect('notify::selected', () => {
+            this.update();
+        });
+        return this.verbRow;
+    }
+
+    #getIgnoreTLSErrorsRow() {
+        if (!this.ignoreTLSErrorsRow) {
+            this.ignoreTLSErrorsRow = new Adw.SwitchRow({
+                title: 'Ignore TLS certificate errors',
+                subtitle: 'self-signed, etc.',
+            });
+
+            const havePing = this.verbRow.selected_item.get_string() === 'PING';
+            this.ignoreTLSErrorsRow.set_sensitive(!havePing);
+
+            const ignoreTLSErrors = this.settings?.ignoreTLSErrors ?? false;
+            this.ignoreTLSErrorsRow.set_active(ignoreTLSErrors);
+            this.ignoreTLSErrorsHandlerId = this.ignoreTLSErrorsRow.connect('notify::active', () => {
+                this.update();
+            });
+        }
+        return this.ignoreTLSErrorsRow;
+    }
+
+    #getIgnoreRedirectsRow() {
+        if (!this.ignoreRedirectsRow) {
+            this.ignoreRedirectsRow = new Adw.SwitchRow({
+                title: 'Do not follow redirects',
+                subtitle: 'Treat 3xx status codes as success.',
+            });
+            const ignoreRedirects = this.settings?.ignoreRedirects ?? false;
+
+            const havePing = this.verbRow.selected_item.get_string() === 'PING';
+            this.ignoreRedirectsRow.set_sensitive(!havePing);
+
+            this.ignoreRedirectsRow.set_active(ignoreRedirects);
+            this.ignoreRedirectsHandlerId = this.ignoreRedirectsRow.connect('notify::active', () => {
+                this.update();
+            });
+        }
+        return this.ignoreRedirectsRow;
+    }
+
+    #getUseNotificationsRow() {
+        if (!this.useNotificationsRow) {
+            this.useNotificationsRow = new Adw.SwitchRow({
+                title: 'Notify when down',
+                subtitle: 'Displays a desktop notification.',
+            });
+            const notifies = this.settings?.notifies ?? false;
+            this.useNotificationsRow.set_active(notifies);
+            this.useNotificationsHandlerId = this.useNotificationsRow.connect('notify::active', () => {
+                this.update();
+            });
+        }
+        return this.useNotificationsRow;
+    }
+
+    #getHeadersRow() {
+        if (!this.headersRow) {
+            this.headersRow = new Adw.ButtonRow({
+                title: 'Request Headers',
+            });
+            this.headersRow.set_end_icon_name('go-next');
+            this.headersRow.connect('activated', () => {
+                this.#openHeadersDialog();
+            });
+
+            const havePing = this.verbRow.selected_item.get_string() === 'PING';
+            this.headersRow.set_sensitive(!havePing);
+        }
+        return this.headersRow;
+    }
+
+    #openHeadersDialog() {
+        const title = this.settings?.name ?? 'Unnamed Server';
+        const headers = this.settings?.headers ?? [];
+        this.headersDialog = new HeadersDialog(title, headers);
+        this.headersDialogHandlerId = this.headersDialog.connect('closed', () => {
+            const newHeaders = this.headersDialog.getHeaders();
+            this.headers = newHeaders;
+            this.update();
+            this.headersDialog.destroy();
+            this.headersDialog = null;
+            this.preferences.doSave();
+        });
+        this.headersDialog.present(this.preferences.window);
+    }
+
+    /**
+     * Set the initial subtitle based on provided settings.
+     *
+     * @returns {string}
+     */
+    #initSubtitle() {
+        if (!this.settings)
+            return '';
+
+        return `${this.settings.verb} ${this.settings.url} @ ${this.settings.frequency}s with ${this.settings.timeout}s timeout`;
     }
 
     /**
      * Get the title based on user input.
      *
-     * @returns {String}
+     * @returns {string}
      */
     getTitle() {
         return this.nameRow.text;
@@ -191,81 +385,37 @@ export class ServerGroup {
     /**
      * Get the subtitle based on user input.
      *
-     * @returns {String}
+     * @returns {string}
      */
     getSubtitle() {
+        const httpMethod = this.verbRow.selected_item.get_string();
         const url = this.urlRow.text;
         const freq = this.frequencyRow.text;
         const timeout = this.timeoutRow.text;
-        const httpMethod = this.useGetSwitchRow.active ? "GET" : "HEAD";
-        return `${httpMethod} ${url} @ ${freq}s with ${timeout}s timeout ${this.useNotificationsSwitchRow.active ? "🔔" : ""}`;
+
+        return `${httpMethod} ${url} @ ${freq}s with ${timeout}s timeout`;
+    }
+
+    /**
+     * Renew #serverSettings, save them and update UI.
+     */
+    update() {
+        this.#createServerSettings();
+        this.preferences.doSave();
+        this.updateExpander();
+        const havePing = this.verbRow.selected_item.get_string() === 'PING';
+        this.ignoreRedirectsRow.set_sensitive(!havePing);
+        this.ignoreTLSErrorsRow.set_sensitive(!havePing);
+        this.headersRow.set_sensitive(!havePing);
     }
 
     /**
      * Update the expander title & subtitle.
      */
     updateExpander() {
-        this.expander.set_title(this.getTitle());
-        this.expander.set_subtitle(this.getSubtitle());
-    }
-
-    /**
-     * Move this `Adw.PreferenceGroup` down by one in the list.
-     *
-     * @param {ServerGroup} array of `ServerGroup`s
-     * @returns true if a move occurred.
-     */
-    moveDown(serverGroups) {
-        const index = this.getPosition(serverGroups);
-        if (index !== -1 && index < serverGroups.length - 1) {
-            this.move(index, index + 1, serverGroups);
-            return true;
-        }
-        return false; // no move was made
-    }
-
-    /**
-     * Move this `Adw.PreferenceGroup` up by one in the list.
-     *
-     * @param {ServerGroup} array of `ServerGroup`s
-     * @returns true if a move occurred.
-     */
-    moveUp(serverGroups) {
-        const index = this.getPosition(serverGroups);
-        if (index > 0) {
-            this.move(index, index - 1, serverGroups);
-            return true;
-        }
-        return false; // no move was made
-    }
-
-    /**
-     * Find the index of `this` in the provided array.
-     *
-     * @param {ServerGroup} array of `ServerGroup`s
-     * @returns int index of `this` in provided array, -1 if not found
-     */
-    getPosition(serverGroups) {
-        for (let i = 0; i < serverGroups.length; i++) {
-            const serverGroup = serverGroups[i];
-            if (serverGroup.id === this.id) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /**
-     * Move `this` in provided array using provided 'from' index and 'to' index.
-     *
-     * @param {int} fromIndex the position being moved from
-     * @param {int} toIndex the move destination
-     * @param {ServerGroup} array of `ServerGroup`s
-     */
-    move(fromIndex, toIndex, serverGroups) {
-        const serverGroup = serverGroups[fromIndex];
-        serverGroups.splice(fromIndex, 1);
-        serverGroups.splice(toIndex, 0, serverGroup);
+        this.expanderRow.set_title(this.getTitle());
+        this.expanderRow.set_subtitle(this.getSubtitle());
+        this.#updateIndicators();
     }
 
     /**
@@ -274,9 +424,9 @@ export class ServerGroup {
      * @returns {ServerSetting}
      */
     getSettings() {
-        if (!this.settings) {
-            this.createServerSettings();
-        }
+        if (!this.settings)
+            this.#createServerSettings();
+
         return this.settings;
     }
 
@@ -290,57 +440,62 @@ export class ServerGroup {
     }
 
     /**
-     * Returns the _Name_ `EntryRow`.
-     *
-     * @returns {Adw.EntryRow}
-     */
-    getNameInput() {
-        return this.nameRow;
-    }
-
-    /**
      * Create a `ServerSetting` based on control values.
      */
-    createServerSettings() {
+    #createServerSettings() {
+        const verbText = this.verbRow.selected_item.get_string();
         this.settings = new ServerSetting(
             this.nameRow.text,
             this.urlRow.text,
-            this.frequencyRow.text,
-            this.timeoutRow.text,
-            this.useGetSwitchRow.active,
-            this.useNotificationsSwitchRow.active,
+            Number(this.frequencyRow.text),
+            Number(this.timeoutRow.text),
+            verbText,
+            this.useNotificationsRow.active,
+            this.visible,
+            this.ignoreTLSErrorsRow.active,
+            this.ignoreRedirectsRow.active,
+            this.headers
         );
     }
 
     /**
-     * Create a unique ID for this group.
-     *
-     * @returns {String}
+     * Disconnect listeners and dispose of boxed lists, icons, and instance variables.
      */
-    createUID() {
-        const buffer = [];
-        const chars =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        const charlen = chars.length;
-        for (let i = 0; i < 32; i++) {
-            buffer[i] = chars.charAt(Math.floor(Math.random() * charlen));
-        }
-        return buffer.join("");
+    destroy() {
+        this.#unplug(this.visibilityButton, this.visibilityHandlerId);
+        this.#unplug(this.deleteButton, this.deleteHandlerId);
+        this.#unplug(this.nameRow, this.nameHandlerId);
+        this.#unplug(this.urlRow, this.urlHandlerId);
+        this.#unplug(this.frequencyRow, this.frequencyHandlerId);
+        this.#unplug(this.timeoutRow, this.timeoutHandlerId);
+        this.#unplug(this.verbRow, this.verbHandlerId);
+        this.#unplug(this.ignoreTLSErrorsRow, this.ignoreTLSErrorsHandlerId);
+        this.#unplug(this.ignoreRedirectsRow, this.ignoreRedirectsHandlerId);
+        this.#unplug(this.useNotificationsRow, this.useNotificationsHandlerId);
+        this.#unplug(this.headersDialog, this.headersDialogHandlerId);
+
+        this.ignoreTLSErrorsImage = null;
+        this.ignoreRedirectsImage = null;
+        this.notifiesImage = null;
+        this.headersImage = null;
+
+        this.id = null;
+        this.preferences = null;
+        this.serverSettingGroup = null;
+        this.expanderRow = null;
     }
 
     /**
-     * Remove the group with supplied id from the provided set of groups.
+     * Disconnect the handlerId from the control and set both to null.
      *
-     * @param {String} id the id of the group to remove
-     * @param {ServerGroup} array of `ServerGroup`s without group with supplied id
+     * @param {Adw.*} control
+     * @param {string} handlerId
      */
-    removeGroup(id, serverGroups) {
-        for (let i = 0; i < serverGroups.length; i++) {
-            const candidate = serverGroups[i];
-            if (candidate.id === id) {
-                serverGroups.splice(i, 1);
-                break;
-            }
+    #unplug(control, handlerId) {
+        if (control && handlerId) {
+            control.disconnect(handlerId);
+            handlerId = null;
+            control = null;
         }
     }
 }

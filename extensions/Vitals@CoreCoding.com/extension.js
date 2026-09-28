@@ -13,10 +13,9 @@ import * as Sensors from './sensors.js';
 
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 import * as Values from './values.js';
-import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as MenuItem from './menuItem.js';
+import * as SensorCatalog from './helpers/catalog.js';
 
 let vitalsMenu;
 
@@ -29,26 +28,12 @@ var VitalsMenuButton = GObject.registerClass({
         this._extensionObject = extensionObject;
         this._settings = extensionObject.getSettings();
 
-        this._sensorIcons = {
-            'temperature' : { 'icon': 'temperature-symbolic.svg' },
-                'voltage' : { 'icon': 'voltage-symbolic.svg' },
-                    'fan' : { 'icon': 'fan-symbolic.svg' },
-                 'memory' : { 'icon': 'memory-symbolic.svg' },
-              'processor' : { 'icon': 'cpu-symbolic.svg' },
-                 'system' : { 'icon': 'system-symbolic.svg' },
-                'network' : { 'icon': 'network-symbolic.svg',
-                           'icon-rx': 'network-download-symbolic.svg',
-                           'icon-tx': 'network-upload-symbolic.svg' },
-                'storage' : { 'icon': 'storage-symbolic.svg' },
-                'battery' : { 'icon': 'battery-symbolic.svg' },
-                    'gpu' : { 'icon': 'gpu-symbolic.svg' }
-        }
+        this._sensorIcons = SensorCatalog.sensorCatalog;
 
-        // list with the prefixes for the according themes, the index of each 
+        // list with the prefixes for the according themes, the index of each
         // item must match the index on the combo box
         this._sensorsIconPathPrefix = ['/icons/original/', '/icons/gnome/'];
 
-        this._warnings = [];
         this._sensorMenuItems = {};
         this._hotLabels = {};
         this._hotItems = {};
@@ -59,10 +44,9 @@ var VitalsMenuButton = GObject.registerClass({
         this._newGpuDetectedCount = 0;
         this._last_query = new Date().getTime();
 
-        this._sensors = new Sensors.Sensors(this._settings, this._sensorIcons);
+        this._sensors = new Sensors.Sensors(this._settings, this._sensorIcons, _);
         this._values = new Values.Values(this._settings, this._sensorIcons);
         this._menuLayout = new St.BoxLayout({
-            vertical: false,
             clip_to_allocation: true,
             x_align: Clutter.ActorAlign.START,
             y_align: Clutter.ActorAlign.CENTER,
@@ -73,21 +57,9 @@ var VitalsMenuButton = GObject.registerClass({
 
         this._drawMenu();
         this.add_child(this._menuLayout);
-        this._settingChangedSignals = [];
         this._refreshTimeoutId = null;
 
-        this._addSettingChangedSignal('update-time', this._updateTimeSettingChanged.bind(this));
-        this._addSettingChangedSignal('position-in-panel', this._positionInPanelChanged.bind(this));
-        this._addSettingChangedSignal('menu-centered', this._positionInPanelChanged.bind(this));
-        this._addSettingChangedSignal('icon-style', this._iconStyleChanged.bind(this));
-
-        let settings = [ 'use-higher-precision', 'alphabetize', 'hide-zeros', 'fixed-widths', 'hide-icons', 'unit', 'memory-measurement', 'include-public-ip', 'network-speed-format', 'storage-measurement', 'include-static-info', 'include-static-gpu-info' ];
-        for (let setting of Object.values(settings))
-            this._addSettingChangedSignal(setting, this._redrawMenu.bind(this));
-
-        // add signals for show- preference based categories
-        for (let sensor in this._sensorIcons)
-            this._addSettingChangedSignal('show-' + sensor, this._showHideSensorsChanged.bind(this));
+        this._connectSettingsSignals();
 
         this._initializeMenu();
 
@@ -96,6 +68,34 @@ var VitalsMenuButton = GObject.registerClass({
 
         // start monitoring sensors
         this._initializeTimer();
+    }
+
+    _connectSettingsSignals() {
+        this._settings.connectObject(
+            'changed::update-time', this._initializeTimer.bind(this),
+            'changed::position-in-panel', this._positionInPanelChanged.bind(this),
+            'changed::menu-centered', this._positionInPanelChanged.bind(this),
+            this);
+
+        let settings = [ 'use-higher-precision', 'alphabetize', 'hide-zeros',
+                         'fixed-widths', 'hide-icons', 'unit', 'icon-style',
+                         'memory-measurement', 'include-public-ip', 'network-public-ip-interval',
+                         'network-public-ip-show-flag', 'network-public-ip-provider', 'network-speed-format', 'network-speed-unit', 'storage-measurement',
+                         'include-static-info', 'include-static-gpu-info' ];
+
+        for (let setting of settings)
+            this._settings.connectObject('changed::' + setting, this._redrawMenu.bind(this), this);
+
+        for (let setting of SensorCatalog.colorSettingsKeys())
+            this._settings.connectObject('changed::' + setting, this._thresholdColorsChanged.bind(this), this);
+
+        for (let sensor in this._sensorIcons)
+            this._settings.connectObject('changed::show-' + sensor, this._showHideSensorsChanged.bind(this), this);
+    }
+
+    _thresholdColorsChanged() {
+        this._values.resetHistory(this._numGpus);
+        this._querySensors();
     }
 
     _initializeMenu() {
@@ -123,7 +123,6 @@ var VitalsMenuButton = GObject.registerClass({
 
         let customButtonBox = new St.BoxLayout({
             style_class: 'vitals-button-box',
-            vertical: false,
             clip_to_allocation: true,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
@@ -134,12 +133,13 @@ var VitalsMenuButton = GObject.registerClass({
         // custom round refresh button
         let refreshButton = this._createRoundButton('view-refresh-symbolic', _('Refresh'));
         refreshButton.connect('clicked', (self) => {
-            // force refresh by clearing history
-            this._sensors.resetHistory();
+            // soft reset: clear history without rediscovering hardware (rediscover races
+            // _queryGpu when DRM indices are briefly empty and disables the group header)
+            this._sensors.resetHistory(false);
             this._values.resetHistory(this._numGpus);
 
             // make sure timer fires at next full interval
-            this._updateTimeChanged();
+            this._initializeTimer();
 
             // refresh sensors now
             this._querySensors();
@@ -169,15 +169,15 @@ var VitalsMenuButton = GObject.registerClass({
         this.menu.addMenuItem(item);
 
         // query sensors on menu open
-        this._menuStateChangeId = this.menu.connect('open-state-changed', (self, isMenuOpen) => {
+        this.menu.connectObject('open-state-changed', (menu, isMenuOpen) => {
             if (isMenuOpen) {
                 // make sure timer fires at next full interval
-                this._updateTimeChanged();
+                this._initializeTimer();
 
                 // refresh sensors now
                 this._querySensors();
             }
-        });
+        }, this);
     }
 
     _initializeMenuGroup(groupName, optionName, menuSuffix = '', position = -1) {
@@ -188,10 +188,10 @@ var VitalsMenuButton = GObject.registerClass({
         if (!this._settings.get_boolean('show-' + optionName))
             this._groups[groupName].actor.hide();
 
-        if (!this._groups[groupName].status) {
-            this._groups[groupName].status = this._defaultLabel();
-            this._groups[groupName].actor.insert_child_at_index(this._groups[groupName].status, 4);
-            this._groups[groupName].status.text = _('No Data');
+        if (!this._groups[groupName]._statusLabel) {
+            this._groups[groupName]._statusLabel = this._defaultLabel();
+            this._groups[groupName].actor.insert_child_at_index(this._groups[groupName]._statusLabel, 4);
+            this._groups[groupName]._statusLabel.text = _('No Data');
         }
 
         if(position == -1) this.menu.addMenuItem(this._groups[groupName]);
@@ -239,6 +239,8 @@ var VitalsMenuButton = GObject.registerClass({
     }
 
     _initializeTimer() {
+        this._destroyTimer();
+
         // used to query sensors and update display
         let update_time = this._settings.get_int('update-time');
         this._refreshTimeoutId = GLib.timeout_add_seconds(
@@ -252,7 +254,7 @@ var VitalsMenuButton = GObject.registerClass({
         );
     }
 
-    _createHotItem(key, value) {
+    _createHotItem(key, value, gicon, style) {
         let item = new St.BoxLayout({
             style_class: 'vitals-panel-item',
         });
@@ -261,6 +263,7 @@ var VitalsMenuButton = GObject.registerClass({
 
         if (!this._settings.get_boolean('hide-icons') || key == '_default_icon_') {
             let icon = this._defaultIcon(key);
+            if (gicon) icon.gicon = gicon;
             item.add_child(icon);
         }
 
@@ -270,6 +273,7 @@ var VitalsMenuButton = GObject.registerClass({
         let label = new St.Label({
             style_class: 'vitals-panel-label',
             text: (value)?value:'\u2026', // ...
+            style: style || null,
             y_expand: true,
             y_align: Clutter.ActorAlign.CENTER
         });
@@ -285,14 +289,15 @@ var VitalsMenuButton = GObject.registerClass({
     }
 
     _showHideSensorsChanged(self, sensor) {
-        this._sensors.resetHistory();
-
         const sensorName = sensor.substr(5);
         if(sensorName === 'gpu') {
             for(let i = 1; i <= this._numGpus; i++)
                 this._groups[sensorName + '#' + i].visible = this._settings.get_boolean(sensor);
         } else
             this._groups[sensorName].visible = this._settings.get_boolean(sensor);
+
+        // prefs may have removed this group's sensors from hot-sensors; rebuild panel/menu
+        this._redrawMenu();
     }
 
     _positionInPanelChanged() {
@@ -310,27 +315,6 @@ var VitalsMenuButton = GObject.registerClass({
         boxes[position[0]].insert_child_at_index(this.container, position[1]);
     }
 
-    _redrawDetailsMenuIcons() {
-        // updates the icons on the 'details' menu, the one 
-        // you have to click to appear
-        this._sensors.resetHistory();
-        for (const sensor in this._sensorIcons) {
-            if (sensor == "gpu") continue;
-            this._groups[sensor].icon.gicon = Gio.icon_new_for_string(this._sensorIconPath(sensor));
-        }
-
-        // gpu's are indexed differently, handle them here
-        const gpuKeys = Object.keys(this._groups).filter(key => key.startsWith("gpu#"));
-        gpuKeys.forEach((gpuKey) => {
-            this._groups[gpuKey].icon.gicon = Gio.icon_new_for_string(this._sensorIconPath("gpu"));
-        }); 
-    }
-
-    _iconStyleChanged() {
-        this._redrawDetailsMenuIcons();
-        this._redrawMenu();
-    }
-
     _removeHotItems(){
         for (let key in this._hotItems) {
             this._removeHotItem(key);
@@ -339,26 +323,34 @@ var VitalsMenuButton = GObject.registerClass({
 
     _removeHotItem(key) {
         if (key in this._hotItems) {
-            this._hotItems[key].destroy();
-            delete this._hotItems[key];
             delete this._hotLabels[key];
             delete this._widths[key];
+            this._hotItems[key].destroy();
+            delete this._hotItems[key];
         }
     }
 
-    _redrawMenu() {
+    _redrawHotSensors() {
         this._removeHotItems();
-
-        for (let key in this._sensorMenuItems) {
-            if (key.includes('-group')) continue;
-            this._sensorMenuItems[key].destroy();
-            delete this._sensorMenuItems[key];
-        }
-
         this._drawMenu();
-        this._sensors.resetHistory();
         this._values.resetHistory(this._numGpus);
         this._querySensors();
+    }
+
+    _redrawMenu() {
+        for (let key in this._sensorMenuItems) {
+            if (key.includes('-group')) continue;
+            let item = this._sensorMenuItems[key];
+            delete this._sensorMenuItems[key];
+            item.destroy();
+        }
+
+        // group headers persist across row rebuilds; refresh pack (original vs gnome)
+        for (let groupName in this._groups)
+            this._groups[groupName].icon.gicon = Gio.icon_new_for_string(this._sensorIconPath(groupName));
+
+        this._sensors.resetHistory(false);
+        this._redrawHotSensors();
     }
 
     _drawMenu() {
@@ -369,43 +361,32 @@ var VitalsMenuButton = GObject.registerClass({
             if (key == '__max_network-download__') key = '__network-rx_max__';
             if (key == '__max_network-upload__') key = '__network-tx_max__';
 
-            this._createHotItem(key);
+            // reuse dropdown value/icon/style so pin doesn't flash "…" or uncolored text
+            let menuItem = this._sensorMenuItems[key];
+            this._createHotItem(key, menuItem?.value, menuItem?.gicon, menuItem?.valueStyle);
         }
     }
 
     _destroyTimer() {
-        // invalidate and reinitialize timer
         if (this._refreshTimeoutId != null) {
             GLib.Source.remove(this._refreshTimeoutId);
             this._refreshTimeoutId = null;
         }
     }
 
-    _updateTimeSettingChanged() {
-        this._destroyTimer();
-        this._initializeTimer();
-    }
-
-    _updateTimeChanged() {
-        this._destroyTimer();
-        this._initializeTimer();
-    }
-
-    _addSettingChangedSignal(key, callback) {
-        this._settingChangedSignals.push(this._settings.connect('changed::' + key, callback));
-    }
-
-    _updateDisplay(label, value, type, key) {
+    _updateDisplay(label, value, type, key, style) {
         // update sensor value in menubar
-        if (this._hotLabels[key]) {
-            this._hotLabels[key].set_text(value);
+        let hotLabel = this._hotLabels[key];
+        if (hotLabel) {
+            hotLabel.set_text(value);
+            hotLabel.style = style;
 
             // support for fixed widths #55
             if (this._settings.get_boolean('fixed-widths')) {
                 // grab text box width and see if new text is wider than old text
-                let width2 = this._hotLabels[key].get_clutter_text().width;
+                let width2 = hotLabel.get_clutter_text().width;
                 if (width2 > this._widths[key]) {
-                    this._hotLabels[key].set_width(width2);
+                    hotLabel.set_width(width2);
                     this._widths[key] = width2;
                 }
             }
@@ -416,17 +397,21 @@ var VitalsMenuButton = GObject.registerClass({
         if (item) {
             // update sensor value in the group
             item.value = value;
+            item.valueStyle = style;
         } else if (type.includes('-group')) {
             // update text next to group header
             let group = type.split('-')[0];
-            if (this._groups[group]) {
-                this._groups[group].status.text = value;
+            let statusLabel = this._groups[group]?._statusLabel;
+            if (statusLabel) {
+                statusLabel.text = value;
+                statusLabel.style = style;
                 this._sensorMenuItems[type] = this._groups[group];
             }
         } else {
             // add item to group for the first time
             let sensor = { 'label': label, 'value': value, 'type': type }
             this._appendMenuItem(sensor, key);
+            this._sensorMenuItems[key].valueStyle = style;
         }
     }
 
@@ -443,28 +428,23 @@ var VitalsMenuButton = GObject.registerClass({
             if (self.checked) {
                 // add selected sensor to panel
                 hotSensors.push(self.key);
-                this._createHotItem(self.key, self.value);
             } else {
                 // remove selected sensor from panel
                 hotSensors.splice(hotSensors.indexOf(self.key), 1);
-                this._removeHotItem(self.key);
             }
 
             if (hotSensors.length <= 0) {
                 // add generic icon to panel when no sensors are selected
                 hotSensors.push('_default_icon_');
-                this._createHotItem('_default_icon_');
             } else {
                 let defIconPos = hotSensors.indexOf('_default_icon_');
-                if (defIconPos >= 0) {
-                    // remove generic icon from panel when sensors are selected
+                if (defIconPos >= 0)
                     hotSensors.splice(defIconPos, 1);
-                    this._removeHotItem('_default_icon_');
-                }
             }
 
             // this code is called asynchronously - make sure to save it for next round
             this._saveHotSensors(hotSensors);
+            this._redrawHotSensors();
         });
 
         this._sensorMenuItems[key] = item;
@@ -511,12 +491,21 @@ var VitalsMenuButton = GObject.registerClass({
     }
 
     _sensorIconPath(sensor, icon = 'icon') {
-        // If the sensor is a numbered gpu, use the gpu icon. Otherwise use whatever icon associated with the sensor name.
         let sensorKey = sensor;
-        if(sensor.startsWith('gpu')) sensorKey = 'gpu';
+
+        // If the sensor is a numbered gpu, use the gpu icon. Otherwise use whatever icon associated with the sensor name.
+        if (sensor.startsWith('gpu')) sensorKey = 'gpu';
+
+        // allows country flags to show
+        const icons = this._sensorIcons[sensorKey];
+        if (sensorKey === 'network' && icon.startsWith('icon-') && !(icons && icons[icon])) {
+            let cc = icon.slice('icon-'.length);
+            if (/^[a-z]{2}$/.test(cc))
+                return this._extensionObject.path + '/icons/flags/1x1/' + cc + '.svg';
+        }
 
         const iconPathPrefixIndex = this._settings.get_int('icon-style');
-        return this._extensionObject.path + this._sensorsIconPathPrefix[iconPathPrefixIndex] + this._sensorIcons[sensorKey][icon];
+        return this._extensionObject.path + this._sensorsIconPathPrefix[iconPathPrefixIndex] + icons[icon];
     }
 
     _ucFirst(string) {
@@ -572,9 +561,14 @@ var VitalsMenuButton = GObject.registerClass({
         let dwell = (now - this._last_query) / 1000;
         this._last_query = now;
 
+        // panel labels only when closed — `_default_icon_` is in _hotItems, not _hotLabels
+        // empty set still queries so dwell-based sensors keep warm baselines
+        let wantedKeys = this.menu.isOpen ? null : new Set(Object.keys(this._hotLabels));
+
         this._sensors.query((label, value, type, format) => {
-            const typeKey = type.replace('-group', '');
-            let key = '_' + typeKey + '_' + label.replace(' ', '_').toLowerCase() + '_';
+            let typeKey = type.replace('-group', '');
+            if (/^network-(?!rx$|tx$)/.test(typeKey)) typeKey = 'network';
+            let key = '_' + typeKey + '_' + label.replaceAll(' ', '_').toLowerCase() + '_';
 
             // if a sensor is disabled, gray it out
             if (key in this._sensorMenuItems) {
@@ -582,10 +576,13 @@ var VitalsMenuButton = GObject.registerClass({
 
                 // don't continue below, last known value is shown
                 if (value == 'disabled') return;
+            } else if (value == 'disabled' && type.includes('-group')) {
+                // group headers are not menu rows; formatting 'disabled' yields NaN
+                return;
             }
 
             // add/initialize any gpu groups that we haven't added yet
-            if(typeKey.startsWith('gpu') && typeKey !== 'gpu#1') {
+            if (typeKey.startsWith('gpu') && typeKey !== 'gpu#1') {
                 const split = typeKey.split('#');
                 if(split.length == 2 && this._numGpus < parseInt(split[1])) {
                     // occasionally two lines from nvidia-smi will be read at once
@@ -608,35 +605,42 @@ var VitalsMenuButton = GObject.registerClass({
             }
 
             let items = this._values.returnIfDifferent(dwell, label, value, type, format, key);
-            for (let item of Object.values(items))
-                this._updateDisplay(_(item[0]), item[1], item[2], item[3]);
-        }, dwell);
+            for (let item of items) {
+                if (item.type.startsWith('network-') && item.type.length == 10 && item.type != 'network-rx' && item.type != 'network-tx') {
+                    // Geo / flags: stable key (no country in key); type stays network-<cc> for icon-us etc.
+                    const stem = item.type.slice('network-'.length);
+                    let flagGIcon = Gio.icon_new_for_string(this._sensorIconPath('network', 'icon-' + stem));
+                    if (this._hotItems[item.key] && !this._settings.get_boolean('hide-icons')) {
+                        // change icon in menu bar
+                        let icon = this._hotItems[item.key].get_first_child();
+                        if (icon instanceof St.Icon)
+                        icon.gicon = flagGIcon;
+                    }
+                    // change icon in dropdown
+                    let menuRow = this._sensorMenuItems[item.key];
+                    if (menuRow) menuRow.gicon = flagGIcon;
+                }
+
+                this._updateDisplay(_(item.label), item.value, item.type, item.key, item.style);
+            }
+        }, dwell, wantedKeys);
 
         //if a new gpu has been detected during the last query, then increment the amount of times we've detected a new gpu
         if(this._newGpuDetected) this._newGpuDetectedCount++;
         else this._newGpuDetectedCount = 0;
         this._newGpuDetected = false;
-
-        if (this._warnings.length > 0) {
-            this._notify('Vitals', this._warnings.join("\n"), 'folder-symbolic');
-            this._warnings = [];
-        }
-    }
-
-    _notify(msg, details, icon) {
-        let source = new MessageTray.Source('MyApp Information', icon);
-        Main.messageTray.add(source);
-        let notification = new MessageTray.Notification(source, msg, details);
-        notification.setTransient(true);
-        source.notify(notification);
     }
 
     destroy() {
         this._destroyTimer();
         this._sensors.destroy();
 
-        for (let signal of Object.values(this._settingChangedSignals))
-            this._settings.disconnect(signal);
+        this._settings.disconnectObject(this);
+        this.menu.disconnectObject(this);
+
+        this._hotLabels = {};
+        this._hotItems = {};
+        this._sensorMenuItems = {};
 
         super.destroy();
     }

@@ -8,6 +8,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import * as Me_PopupMenu from './popupMenu.js';
+import DockerAPI from '../lib/docker.js';
 
 export const Container_Menu = GObject.registerClass(
 	class Container_Menu extends Me_PopupMenu.PopupSubMenuMenuItem {
@@ -42,6 +43,22 @@ export const Container_Menu = GObject.registerClass(
 			}
 
 			this.actor.insert_child_at_index(this._icon, 1);
+
+			if (this._container.health === 'unhealthy' && this._container.settings.get_boolean('show-health')) {
+				this._unhealthy_icon = new St.Icon({
+					icon_name: 'dialog-warning-symbolic',
+					style_class: 'unhealthy',
+					icon_size: '14'
+				});
+				this.actor.insert_child_below(this._unhealthy_icon, this.label);
+			}
+		}
+
+		add_health() {
+			if (!this._container.settings.get_boolean('show-health')) return;
+			this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem(
+				`${_('Health')}: ${DockerAPI.health_label(this._container.health)}`
+			));
 		}
 
 		add_information() {
@@ -69,7 +86,7 @@ export const Container_Menu = GObject.registerClass(
 			this._gateway = new PopupMenu.PopupMenuItem(`Gateway: ${this._container.gateway}`);
 			this._gateway.connect('activate', () => {
 				clipboard.set_text(St.ClipboardType.CLIPBOARD, this._container.gateway);
-				Main.notify(`Gateway ${clipboard_copied}}`, null);
+				Main.notify(`Gateway ${clipboard_copied}`, null);
 			});
 
 			this.menu.addMenuItem(this._gateway);
@@ -92,7 +109,6 @@ export const Container_Menu = GObject.registerClass(
 				let by_ip = `${this._container.ip}:${port}`;
 				this[by_ip] = new PopupMenu.PopupMenuItem(`${port} -> ${by_ip}`);
 				this[by_ip].connect('activate', () => {
-					// Open in browser
 					GLib.spawn_command_line_async(`xdg-open http://${by_ip}`);
 				});
 
@@ -103,7 +119,6 @@ export const Container_Menu = GObject.registerClass(
 					let by_localhost = `localhost:${host_port}`;
 					this[by_localhost] = new PopupMenu.PopupMenuItem(`${port} -> ${by_localhost}`);
 					this[by_localhost].connect('activate', () => {
-						// Open in browser
 						GLib.spawn_command_line_async(`xdg-open http://${by_localhost}`);
 					});
 

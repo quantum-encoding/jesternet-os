@@ -3,9 +3,6 @@ import GObject from 'gi://GObject';
 import St from 'gi://St';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import * as Config from 'resource:///org/gnome/shell/misc/config.js';
-const [major, _minor] = Config.PACKAGE_VERSION.split('.').map(s => Number(s));
-
 import * as Tooltip from '../lib/tooltip.js';
 
 export const PopupSubMenuMenuItem = GObject.registerClass(
@@ -13,7 +10,6 @@ export const PopupSubMenuMenuItem = GObject.registerClass(
 		constructor(name) {
 			super(name);
 			this.buttons = 0;
-			// this.style = "word-wrap: break-word; width: 200px;";
 		}
 
 		new_action_button(icon, onClickAction, tooltip) {
@@ -60,12 +56,7 @@ export const PopupMenuScrollSection = class PopupMenuScrollSection extends Popup
 			overlay_scrollbars: false,
 		});
 
-		if (major < 46) {
-			this.actor.add_actor(this.box);
-		} else {
-			this.actor.set_child(this.box);
-		}
-
+		this.actor.set_child(this.box);
 		this.actor._delegate = this;
 	}
 };

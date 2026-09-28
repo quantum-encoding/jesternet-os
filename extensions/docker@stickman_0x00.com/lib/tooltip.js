@@ -25,19 +25,11 @@ export const Tooltip = class Tooltip {
 		this._hoverTimeoutId = 0;
 		this._showing = false;
 
-		this._destroyId = this.parent.connect(
-			'destroy',
-			this.destroy.bind(this)
-		);
-
-		this._hoverId = this.parent.connect(
-			'notify::hover',
-			this._onHover.bind(this)
-		);
-
-		this._buttonPressEventId = this.parent.connect(
-			'button-press-event',
-			this._hide.bind(this)
+		this.parent.connectObject(
+			'destroy', this.destroy.bind(this),
+			'notify::hover', this._onHover.bind(this),
+			'button-press-event', this._hide.bind(this),
+			this
 		);
 	}
 
@@ -149,7 +141,7 @@ export const Tooltip = class Tooltip {
 			if (this.custom) {
 				this._bin.child = this.custom;
 			} else {
-				this._bin.child = new St.BoxLayout({ vertical: false });
+				this._bin.child = new St.BoxLayout();
 
 				if (this.gicon) {
 					this._bin.child.icon = new St.Icon({
@@ -279,9 +271,7 @@ export const Tooltip = class Tooltip {
 	}
 
 	destroy() {
-		this.parent.disconnect(this._destroyId);
-		this.parent.disconnect(this._hoverId);
-		this.parent.disconnect(this._buttonPressEventId);
+		this.parent.disconnectObject(this);
 
 		if (this.custom)
 			this.custom.destroy();
